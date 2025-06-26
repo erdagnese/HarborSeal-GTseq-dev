@@ -1,0 +1,16 @@
+# after installing obitools 3 make sure everytime you initialize it run the following
+source obi3-env/bin/activate
+
+# use it for primer design using ecoPrimers https://git.metabarcoding.org/obitools/ecoprimers/-/wikis/home
+# download and install ecoPrimers 
+#tar –zxvf ecoPrimers.tar.gz
+#cd ecoprimers/src/
+#make
+
+cd Desktop/Blocking_primer_COI
+
+# need to convert fasta files to to obitool files using obivconvert in obitools
+
+# first need to make the fasta files for target and non-target db
+obiconvert --fasta Prey_COI_seqs.fasta --fasta-output 'my_ecopcr_database' > sequences.fasta
+

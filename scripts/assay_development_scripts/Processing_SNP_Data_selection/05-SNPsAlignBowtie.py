@@ -1,0 +1,23 @@
+# Bowtie to align snp primers to genome to check for non-specific binding
+# use Harbor seal genome
+# check SNP primers that were selected and found through previous scripts
+
+# create an index for the reference genome
+bowtie2-build /mnt/d/Projects/2022_wdfw_SPSid/Seal_ID_SNP_panel/GCF_004348235.1_GSC_HSeal_1.0_genomic.fna /mnt/d/Projects/2022_wdfw_SPSid/harbor_seal
+
+cd /mnt/d/Projects/2022_wdfw_SPSid
+
+bowtie2 -x harbor_seal -f Primers_SNPs_to_Align.fasta  -S PvSNPS.sam
+# this is set with default to only report best mapped 
+# let's do it with more possible alignemts so we can remove the ones with multiples later - this will take longer
+bowtie2 -x harbor_seal -f Primers_SNPs_to_Align.fasta -k 2 -S PvSNPSmulti.sam
+# okay so now we will have ones that are unique and ones with multiple but only reporting max 2 alignments (enough to remove them)
+
+# let's make the sam file with all the alignemnts into a bam to pull into R to remove the ones that are dubplicated and bad alignments
+samtools view -S -b PvSNPSmulti.sam > PvSNPsmulti.bam
+
+# let's get rid of ones with at least 1 mismatch bp in the primer region
+samtools view -S PvSNPsmulti.bam | awk '{split($12, subfield, ":"); if(subfield[3]>-6) print $0}' > PvSNPsmulti1.txt
+# we will pull this into R and use this compared to the one with mismatches but presumed alignment
+
+

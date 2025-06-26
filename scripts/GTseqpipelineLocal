@@ -1,0 +1,17 @@
+# this is a script to run the GTseq pipeline for Genotyping
+
+python3 callinGeno_v2.4.py
+python3 ModGTseq_SummaryFigures_v3.py
+# don't actually use the quotes in the input path that it says to do
+
+perl GTseq_GenoCompile_v3.pl > PvSept2024Cor2_Library_Genotypes.csv
+perl GTseq_GenoCompile_Counts.pl > PvSept2024Cor2_Library_Counts.csv
+
+python3 GTseq_GenoCorrect_v2.py
+# This asks you to enter marker names to check and then the corrections you want to check and produces plots to see if that works better, we did this for a number of markers to improve the GT% and alignment of allelic calls then changed those in the ProbeSeq.csv and reran the pipeline up until this point.
+
+# We then want to take the Library Genotypes and the Library Counts into R to assess the sex ratio and which markers are morphometric for the samples we tested and which are not, so we know how many SNPs are explanatory, then we want to look at whether the explanatory ones lead to individual ID or if there are individuals with the same SNP results as other samples
+
+
+#Alternate option for running it outside the wrapper
+perl /home/erin/Projects/WDFW/SPSid/GTseq_September2024/GTseq_Genotyper_v3.pl

@@ -1,0 +1,44 @@
+# Stacks for RADseq data analysis and SNPs
+
+# download Stacks
+tar xfvz stacks-2.62.tar.gz
+cd stacks-2.62
+./configure #--prefix=/Desktop/stacks-2.62
+make -j 4
+
+make install
+
+# pipeline is now ready to run
+
+# set directory again to restart
+cd /mnt/c/Python_programs/stacks-2.62
+
+# 1. Clean data try with one file first
+process_radtags -i 'fastq' -f /mnt/d/WildEcoHealth/Research/Pvit_RADseq_data/STACKS/subset_1/SRR17226660.fastq \
+-o /mnt/d/WildEcoHealth/Research/Pvit_RADseq_data/STACKS/subset_1/output -e pstI -q -c
+
+# try it with the whole subset_1
+process_radtags -i 'fastq' -p /mnt/d/WildEcoHealth/Research/Pvit_RADseq_data/STACKS/subset_1 \
+-o /mnt/d/WildEcoHealth/Research/Pvit_RADseq_data/STACKS/subset_1/output -e pstI -q -c
+# that took < 5 min
+# let's try 11 samples in subset_2
+process_radtags -i 'fastq' -p /mnt/d/WildEcoHealth/Research/Pvit_RADseq_data/STACKS/subset_2 \
+-o /mnt/d/WildEcoHealth/Research/Pvit_RADseq_data/STACKS/subset_2/output -e pstI -q -c
+# that took < 10 min but it skipped one file for some unknown reason  - SRR17226674
+# try 36 now including the one that was skipped
+process_radtags -i 'fastq' -p /mnt/d/WildEcoHealth/Research/Pvit_RADseq_data/STACKS/subset_3 \
+-o /mnt/d/WildEcoHealth/Research/Pvit_RADseq_data/STACKS/subset_3/output -e pstI -q -c
+# this took > 20 min
+
+# try a similar number but multithreaded
+process_radtags -i 'fastq' -p /mnt/d/WildEcoHealth/Research/Pvit_RADseq_data/STACKS/subset_4 \
+-o /mnt/d/WildEcoHealth/Research/Pvit_RADseq_data/STACKS/subset_4/output -e pstI -q -c --threads 4
+
+
+# going to try the rest overnight multithreaded
+process_radtags -i 'fastq' -p "/media/erin/TOSHIBA EXT/WildEcoHealth/Research/Pvit_RADseq_data/FASTQ" \
+-o "/media/erin/TOSHIBA EXT/WildEcoHealth/Research/Pvit_RADseq_data/STACKS/subset_5/output" -e pstI -q -c --threads 4
+
+# pull in reference genome
+# need to align the cleaned reads to the reference genome in BWA see file 3_BWA_refGenome
+

@@ -1,0 +1,37 @@
+# after aligning to the ref genome pull in the .sam files into stacks
+which fastq-dump 
+cd 
+# map using a ref alignment using gstacks 
+ref_map.pl --samples dir --popmap path -o dir
+
+# alternative running pipline in shell loops
+#!/bin/bash
+
+src=$HOME/research/project
+bwa_db=$src/bwa_db/my_bwa_db_prefix
+    
+files=”sample_01
+sample_02
+sample_03”
+
+#
+# Align paired-end data with BWA, convert to BAM and SORT.
+#
+for sample in $files
+do 
+    bwa mem -t 8 $bwa_db $src/samples/${sample}.1.fq.gz $src/samples/${sample}.2.fq.gz |
+      samtools view -b |
+      samtools sort --threads 4 > $src/aligned/${sample}.bam
+done
+
+#
+# Run gstacks to build loci from the aligned paired-end data. We have instructed
+# gstacks to remove any PCR duplicates that it finds.
+#
+gstacks -I $src/aligned/ -M $src/popmaps/popmap --rm-pcr-duplicates -O $src/stacks/ -t 8
+
+#
+# Run populations. Calculate Hardy-Weinberg deviation, population statistics, f-statistics and 
+# smooth the statistics across the genome. Export several output files.
+#
+populations -P $src/stacks/ -M $src/popmaps/popmap -r 0.65 --vcf --genepop --fstats --smooth --hwe -t 8

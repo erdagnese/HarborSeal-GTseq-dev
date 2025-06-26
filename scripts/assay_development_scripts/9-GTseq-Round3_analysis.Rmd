@@ -1,0 +1,644 @@
+---
+title: "9-GTseq_Round3_analysis"
+author: "Erin D'Agnese"
+date: "2023-06-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This script is to bring in the genotyping results from the final round and the metadata of known sex animals to see how well the assay works. First you will need to run the corrections and then rerun with a modified 
+
+```{r}
+library(here)
+library(tidyverse)
+library(adegenet)
+library(readxl)
+library(tibble)
+library(rubias)
+library(janitor)
+```
+
+```{r}
+metadata <- read.csv(here("Processing_GTseq_data","GTseqOptimizationRd3","KnownSexMetadata.csv"),header = TRUE)
+
+Lib_geno <- read.csv(here("Processing_GTseq_data","GTseqOptimizationRd3","PvR3_Library_Genotypes.csv"), header=TRUE,stringsAsFactors=FALSE,check.names=FALSE)
+
+Lib_counts <- read.csv(here("Processing_GTseq_data","GTseqOptimizationRd3","PvR3_Library_Counts.csv"), header = TRUE, row.names = NULL)
+
+locimap <- read.csv(here("Processing_GTseq_data","GTseqOptimizationRd3","LociMap.csv"),header=TRUE)
+
+metadata %>%
+  select(Sample, Sex, Site, region, type, Lat, Lon) -> metadata
+
+```
+
+
+Make a dataframe with the metadata with the genotyping results
+```{r}
+# rename the columns so they have names found in LociMap
+Lib_geno %>%
+  select(!c("Raw Reads", "On-Target Reads", "%On-Target", "%GT", IFI)) -> LibGenos
+
+Lib_geno %>%
+  select(c(Sample, "Raw Reads", "On-Target Reads", "%On-Target", "%GT", IFI)) -> Lib_metrics 
+
+Lib_metrics %>%
+  rename(RawReads = "Raw Reads") %>%
+  rename(OTreads = "On-Target Reads") %>%
+  rename(PerON = "%On-Target") %>%
+  rename(PerGT = "%GT") -> Lib_metrics
+
+LibGenos <-column_to_rownames(LibGenos,var="Sample")
+t(LibGenos) -> LibGenos
+LibGenos <- as.data.frame(LibGenos)
+LibGenos<-rownames_to_column(LibGenos,var="MarkerName")
+left_join(locimap, LibGenos, by = "MarkerName") -> LibGenos
+LibGenos %>%
+  select(!MarkerName) %>%
+  t() %>%
+  as.data.frame() %>%
+  row_to_names(row_number = 1) -> LibGenos
+LibGenos <- rownames_to_column(LibGenos, var = "Sample")
+
+left_join(metadata, Lib_metrics, by = "Sample") -> Lib_MD
+left_join(Lib_MD, LibGenos, by = "Sample") -> Lib_geno_MD 
+
+Lib_geno_MD %>%
+  select(Sample, Sex, region, type, RawReads, OTreads, PerON, PerGT, locXX, locXY) -> SexIDGeno
+
+```
+
+Metrics of success at sex ID based on genotypes not counts
+```{r}
+
+SexIDGeno %>%
+  mutate(GTsex = case_when(locXX == "GG" & locXY == "AA" ~ "M",
+                           locXX == "GG" & locXY == "0" ~ "F",
+                           locXX == "0" & locXY == "0" ~ "U")) -> SexIDGeno
+
+SexIDGeno %>%
+  mutate(SexAgree = case_when(Sex == "M" & GTsex == "M" ~ "M",
+                              Sex == "F" & GTsex == "F" ~ "F",
+                              Sex == "M" & GTsex == "F" ~ "MisMatch",
+                              Sex == "F" & GTsex == "U" ~ "Fail",
+                              Sex == "M" & GTsex == "U" ~ "Fail",
+                              Sex == "U" & GTsex == "M" ~ "New", 
+                              Sex == "U" & GTsex == "F" ~ "New",
+                              Sex == "U" & GTsex == "U" ~ "Unk")) ->SexIDGenoAg
+
+SexIDGenoAg %>%
+  filter(SexAgree == "MisMatch") -> MisassignedSex
+
+SexIDGenoAg %>%
+  filter(SexAgree == "M"| SexAgree == "F") -> CorrectSex
+
+SexIDGenoAg %>%
+  filter(SexAgree == "Fail") -> Fails
+
+SexIDGenoAg %>%
+  filter(SexAgree == "Unk" | SexAgree == "New") -> PrevUnk
+
+SexIDGenoAg %>%
+  filter(SexAgree == "Unk") -> UNK
+
+```
+
+Now we want to look at the read counts for the sex ID
+
+```{r}
+Lib_counts %>%
+  select(Sample, Raw.Reads, On.Target.Reads, X.On.Target, ZFX, ZFY) -> SexIDcounts
+
+left_join(metadata, SexIDcounts, by = "Sample") -> SexIDcounts
+
+SexIDcounts %>%
+  select(!c(Lat, Lon)) %>%
+  mutate(PropY = (ZFY/ZFX)*100) %>%
+  mutate(PA_Sex = case_when(ZFX >= 1 & ZFY == 0 ~ "F",
+                            ZFX >= 1 & ZFY >= 1 ~ "M",
+                            ZFX == 0 ~ "Unk")) %>%
+  mutate(YChromSex = case_when(ZFY >= 1 ~ "M",
+                               ZFY == 0 & ZFX == 0 ~ "Fail",
+                               ZFY == 0 & ZFX < 10 ~ "Check",
+                               ZFY == 0 & ZFX >= 10 ~ "F")) %>%
+  mutate(SexProptarget = case_when(X.On.Target < 10 & PropY == 0 ~ "Check",
+                                   X.On.Target > 10 & PropY >= 1 ~ "M",
+                                   X.On.Target > 10 & PropY == 0 ~ "F",
+                                   X.On.Target < 10 & PropY == "NaN" ~ "Fail",
+                                   X.On.Target < 10 & PropY == "Inf" ~ "M",
+                                   X.On.Target < 10 & PropY >= 1 ~ "M",
+                                   X.On.Target > 10 & PropY <= 1 ~ "M-check"))    -> SexIDcounts2
+
+SexIDcounts2 %>%
+  mutate(SexAgreePropTarg = case_when(Sex == "M" & SexProptarget == "M" ~ "M",
+                              Sex == "F" & SexProptarget == "F" ~ "F",
+                              Sex == "M" & SexProptarget == "F" ~ "MisMatch",
+                              SexProptarget == "Check" ~ "Check",
+                              SexProptarget == "M-check" ~ "M-check",
+                              Sex == "F" & SexProptarget == "M" ~ "Mismatch",
+                              Sex == "U" & SexProptarget == "M" ~ "New", 
+                              Sex == "U" & SexProptarget == "F" ~ "New",
+                              Sex == "M" & SexProptarget == "Fail" ~ "Fail",
+                              Sex == "F" & SexProptarget == "Fail" ~ "Fail",
+                              Sex == "U" & SexProptarget == "Fail" ~ "Fail")) %>%
+  mutate(SexAgreeYPA = case_when(Sex == "M" & YChromSex == "M" ~ "M",
+                              Sex == "F" & YChromSex == "F" ~ "F",
+                              Sex == "M" & YChromSex == "F" ~ "MisMatch",
+                              Sex == "F" & YChromSex == "Check" ~ "Check",
+                              Sex == "M" & YChromSex == "Check" ~ "Check",
+                              Sex == "F" & YChromSex == "M" ~ "Mismatch",
+                              Sex == "F" & YChromSex == "Fail" ~ "Fail",
+                              Sex == "M" & YChromSex == "Fail" ~ "Fail",
+                              Sex == "U" & YChromSex == "M" ~ "New", 
+                              Sex == "U" & YChromSex == "F" ~ "New",
+                              Sex == "U" & YChromSex == "Check" ~ "Check",
+                              Sex == "U" & YChromSex == "Fail" ~ "Fail")) -> SexIDcounts3
+
+```
+
+
+Let's see how many agree, how many are new and how many would require checking
+```{r}
+SexIDcounts3 %>%
+  filter(SexAgreeYPA %in% c("M", "F")) #78 samples
+
+SexIDcounts3 %>%
+  filter(SexAgreeYPA == "Mismatch") # 2
+
+SexIDcounts3 %>%
+  filter(SexAgreeYPA == "New") # 59
+
+SexIDcounts3 %>%
+  filter(SexAgreeYPA == "Check") #31
+
+SexIDcounts3 %>%
+  filter(SexAgreeYPA == "Fail") #16 - 2 were known sex
+
+SexIDcounts3 %>%
+  filter(SexAgreePropTarg %in% c("M", "F")) #74
+
+SexIDcounts3 %>%
+  filter(SexAgreePropTarg == "Mismatch") # 0
+
+SexIDcounts3 %>%
+  filter(SexAgreePropTarg == "Fail") #16 - 2 were known sex - same ones as before
+
+SexIDcounts3 %>%
+  filter(SexAgreePropTarg == "New") #46
+
+SexIDcounts3 %>%
+  filter(SexAgreePropTarg %in% c("Check", "M-check"))
+```
+
+
+
+Outside of R we identified which ones are the microhaplotypes in the csv, and made rows in the probeseq.csv for each SNP in the microhaplotype and rerun, we can do this with some corrections identified through the summary figures. This didn't work to separate out the microhaps, but certain SNPs in the microhaplotypes performed better so the one with the greater GT% was selected to be included in the probeseq.csv
+
+We also need to figure out how many are monomorphic and whether we would need to redesign or try other SNPs
+```{r}
+Lib_geno_MD %>%
+  select(!c(Lat,Lon)) -> Lib_geno_MD
+
+Lib_geno_MD %>% #select only the columns that are SNPs , leave the sex id out for this
+  select(!c(Sex, Site, type, region, RawReads, OTreads, PerON, PerGT, IFI, locXX,locXY)) -> Lib_geno_SNPs
+
+Lib_geno_SNPs[Lib_geno_SNPs == "0"] <- NA # make the "0"'s in the df NA for ease of identifying 
+
+Lib_geno_SNPs %>%
+  select(where(~n_distinct(., na.rm = TRUE) >1)) -> Lib_geno_HetSnp
+
+Lib_geno_SNPs %>%
+  group_by(Sample) %>%
+  select(where(~n_distinct(., na.rm = TRUE) == 1)) -> MonoSNPs
+
+MonoSNPs %>%
+  t() %>%
+  as.data.frame() %>%
+  row_to_names(row_number = 1) %>%
+  tibble::rownames_to_column(var = "LocName") %>%
+  select(LocName) -> MonoSNPsList
+left_join(MonoSNPsList, locimap, by = "LocName") -> MonoSNPsList
+
+write.csv(MonoSNPsList, "ListOfMonomorphicAlleles.csv", row.names = FALSE)
+
+Lib_geno_HetSnp %>%
+  distinct(Lib_geno_HetSnp[,c(2:110)], .keep_all = TRUE) -> UniqueHetSnps #110 SNPs and 158 samples
+
+anti_join(Lib_geno_HetSnp, UniqueHetSnps) -> DuplicateSNP
+# okay so all the samples which don't have unique SNP alleles across the 110 multimorphic markers are the 28 fecal samples that had almost no genotyped alleles across these markers 
+
+DuplicateSNP %>%
+  select(where(~!all(is.na(.x)))) # 2 SNPs that had a couple of genotypes across the samples that were duplicates 
+ 
+```
+
+Nest let's grab the Unique ones and merge them with the metrics to see how good their GT% was so that we can actually trust the results
+Next we need to look at the SNPs that aren't monomorphic and see if any samples are currently identical in all their SNPs, which would indicate a need to take out monomorphic SNPs and order primers for additional SNPs. If there is none that have identical SNP calls, this is unnecessary and the panel can be used as is.
+```{r}
+Lib_geno_MD %>%
+  select(Sample, Sex, Site, type, region, RawReads, OTreads, PerON, PerGT, locXX,locXY) -> Lib_geno_met
+
+left_join(UniqueHetSnps, Lib_geno_met, by = "Sample") -> UniqueMeta
+
+left_join(DuplicateSNP, Lib_geno_met, by = "Sample") -> DuplicateMeta
+
+DuplicateSNP %>%
+  t() %>%
+  as.data.frame() %>%
+  row_to_names(row_number = 1) %>%
+  tibble::rownames_to_column(var = "LocName") %>%
+  select(LocName) -> Mono
+
+
+UniqueMeta %>%
+  relocate(Sex, .after = Sample) %>%
+  relocate(Site, .after = Sex) %>%
+  relocate(region, .after = Site) %>%
+  relocate(type, .after = region) %>%
+  relocate(RawReads, .after = type) %>%
+  relocate(OTreads, .after = RawReads) %>%
+  relocate(PerON, .after = OTreads) %>%
+  relocate(PerGT, .after = PerON) %>%
+  relocate(locXX, .after = PerGT) %>%
+  relocate(locXY, .after = locXX) -> UniqueMeta
+
+range(UniqueMeta$PerGT) # 0 - 99.46
+
+DuplicateMeta %>%
+  relocate(Sex, .after = Sample) %>%
+  relocate(Site, .after = Sex) %>%
+  relocate(region, .after = Site) %>%
+  relocate(type, .after = region) %>%
+  relocate(RawReads, .after = type) %>%
+  relocate(OTreads, .after = RawReads) %>%
+  relocate(PerON, .after = OTreads) %>%
+  relocate(PerGT, .after = PerON) %>%
+  relocate(locXX, .after = PerGT) %>%
+  relocate(locXY, .after = locXX) -> DuplicateMeta
+
+range(DuplicateMeta$PerGT) # 0 - 1.61
+# let's make a dataset with just the feces and one with just tissues
+UniqueMeta %>%
+  filter(type == "feces") -> UniqueFeces
+UniqueMeta %>%
+  filter(type == "tissue") -> UniqueTissue
+
+mean(UniqueTissue$PerGT) # 98.61556
+mean(UniqueFeces$PerGT) # 54.37687
+median(UniqueTissue$PerGT) # 98.66
+median(UniqueFeces$PerGT) # 62.63
+
+# let's pull out the low GT% feces 
+
+UniqueFeces %>%
+  filter(PerGT >= 10) -> UniqFeces10GT # 108 fecal samples >10% GT%
+
+UniqueFeces %>%
+  filter(PerGT >= 50) -> UniqFeces50GT # 71 fecal samples >50% GT%
+
+
+
+```
+
+
+
+
+Next we need to plot PCAs, but first we need to get the dataframe formatted properly
+```{r}
+# first for the entire library with all the markers
+#genos<-read.csv(here("Processing_GTseq_data","GTseqOptimizationRd3","PvR3_Library_Genotypes_test.csv"), header=TRUE,stringsAsFactors=FALSE,check.names=FALSE)
+#it works if you change the names of the loci to not include "." but it changes the names to each one, so let's make sure we do it in a way we can trace it back
+
+genos <- Lib_geno_SNPs
+
+genos[is.na(genos)] <- 0
+
+genos<-column_to_rownames(genos,var="Sample")
+
+genos_genind<-df2genind(genos,sep="",ploidy=2,NA.char=0)
+
+genos_scaleGen<-scaleGen(genos_genind,NA.method="mean")
+
+genos_PCA<-dudi.pca(genos_scaleGen,cent=FALSE,scale=FALSE,scannf=FALSE,nf=4)
+
+PCA_results<-genos_PCA$li
+
+PCA_results<-rownames_to_column(PCA_results,var="Sample")
+
+head(PCA_results)
+
+left_join(PCA_results, metadata, by = "Sample") -> PCA_results_MD
+
+PCA_results_MD %>%
+  ggplot(aes(x=Axis1,y=Axis2, color = region, shape = type))+
+  geom_point(size = 3) +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+
+```
+
+Now for the subset of the variable alleles
+
+```{r}
+Lib_geno_HetSnp -> genos_sub
+
+genos_sub[is.na(genos_sub)] <- 0
+
+genos_sub <-column_to_rownames(genos_sub ,var="Sample")
+
+genos_sub_genind<-df2genind(genos_sub ,sep="",ploidy=2,NA.char=0)
+
+genos_sub_scaleGen<-scaleGen(genos_sub_genind,NA.method="mean")
+
+genos_sub_PCA<-dudi.pca(genos_sub_scaleGen,cent=FALSE,scale=FALSE,scannf=FALSE,nf=4)
+
+Sub_PCA_results<-genos_sub_PCA$li
+
+Sub_PCA_results<-rownames_to_column(Sub_PCA_results,var="Sample")
+
+head(Sub_PCA_results)
+
+left_join(Sub_PCA_results, metadata, by = "Sample") -> Sub_PCA_results_MD
+
+Sub_PCA_results_MD %>%
+  ggplot(aes(x=Axis1,y=Axis2, color = region, shape = type))+
+  geom_point(size = 3) +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+
+  
+```
+
+```{r}
+Lib_geno_MD %>%
+  filter(PerGT >= 50) %>%
+  select(c(Sample, Site, type, region, RawReads, OTreads, PerON, PerGT, locXX,locXY))-> Lib_geno_50
+
+
+
+left_join(Lib_geno_HetSnp, Lib_geno_50, by = "Sample") -> Lib_HetSNP_50
+
+Lib_HetSNP_50 %>%
+  select(!c(Sample, Site, type, region, RawReads, OTreads, PerON, PerGT, locXX,locXY))
+
+Lib_HetSNP_50 -> genos_sub
+
+genos_sub[is.na(genos_sub)] <- 0
+
+genos_sub <-column_to_rownames(genos_sub ,var="Sample")
+
+genos_sub_genind<-df2genind(genos_sub ,sep="",ploidy=2,NA.char=0)
+
+genos_sub_scaleGen<-scaleGen(genos_sub_genind,NA.method="mean")
+
+genos_sub_PCA<-dudi.pca(genos_sub_scaleGen,cent=FALSE,scale=FALSE,scannf=FALSE,nf=4)
+
+Sub_PCA_results<-genos_sub_PCA$li
+
+Sub_PCA_results<-rownames_to_column(Sub_PCA_results,var="Sample")
+
+head(Sub_PCA_results)
+
+left_join(Sub_PCA_results, metadata, by = "Sample") -> Sub_PCA_results_MD
+
+Sub_PCA_results_MD %>%
+  ggplot(aes(x=Axis1,y=Axis2, color = region, shape = type))+
+  geom_point(size = 3) +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+```
+
+
+We need to see if the individuals have different SNP profiles
+```{r}
+# first we want to pull only the polymorphic SNPs dataset and we need mutate the data frame so it is able to be used in the rubias package to find any samples that appear to be the same based on these SNPs
+
+Lib_geno_HetSnp -> LibGenoSNPsDbl
+
+LibGenoSNPsDbl %>%
+  pivot_longer(-Sample) %>%
+  separate(value, c('1','2'), sep = 1) %>%
+  pivot_wider(names_from = name, names_glue = "{name}_{.value}", values_from = '1':'2') %>%
+  select(sort(names(.))) %>%
+  relocate(Sample, .before = loc003_1) -> LibGenoSNPsDbl 
+
+Lib_MD %>%
+  select(type, region, Sample) -> RubiasMD
+
+left_join(RubiasMD, LibGenoSNPsDbl, by = "Sample") -> RubDF
+
+RubDF %>%
+  mutate(repunit = case_when(type == "tissue" ~ "harborseal",
+                                 type == "feces" ~ NA)) %>%
+  relocate(repunit, .before = Sample) %>%
+  mutate(sample_type = case_when(type == "tissue" ~ "reference",
+                                 type == "feces" ~ "mixture")) %>%
+  relocate(sample_type, .before = repunit) %>%
+  unite("collection", c('region','type'), sep = "_") %>%
+  relocate(collection, .before = Sample) %>%
+  rename(indiv = Sample) -> RubDF
+  
+matches <- close_matching_samples(D = RubDF, gen_start_col = 5,
+                                  min_frac_non_miss = 0.85,
+                                  min_frac_matching = 0.94)
+
+
+
+
+
+
+```
+See what that looks like 
+```{r}
+matches %>%
+  arrange(desc(num_non_miss), desc(num_match))
+```
+ There are potentially 2 pairs (4 samples) we need to check to see if they are indeed matches
+ let's pull all their data to see what the samples look like as far as quality go to see if there is a GT% percentage we need to adhere to for individual ID
+```{r}
+Lib_geno_met %>%
+  filter(Sample %in% c('16OP0423', '16OP0426', '18QY0094', '18QY0095')) -> PotDupSamples
+
+left_join(PotDupSamples, Lib_geno_HetSnp, by = "Sample") -> PotDupSamples
+
+```
+
+Well, they do look liek they are the same individuals and since they were collected from the same site it is well within the possibility that they are actually scates from the same individual. We need to see if there is a fraction of missing data which means we can't tell individuals apart.
+
+```{r}
+matches75 <- close_matching_samples(D = RubDF, gen_start_col = 5,
+                                  min_frac_non_miss = 0.75,
+                                  min_frac_matching = 0.95)
+
+```
+
+```{r}
+matches75 %>%
+  arrange(desc(num_non_miss), desc(num_match))
+```
+
+```{r}
+Lib_geno_met %>%
+  filter(Sample %in% c('16OP0423', '16OP0426', '18QY0094', '18QY0095', '16OP0190', '16OP0329', '16OP0358', '16OP0368', '16OP0333', '16OP0335')) -> PotDupSamples75
+
+left_join(PotDupSamples75, Lib_geno_HetSnp, by = "Sample") -> PotDupSamples75
+
+
+```
+
+
+```{r}
+matches80 <- close_matching_samples(D = RubDF, gen_start_col = 5,
+                                  min_frac_non_miss = 0.80,
+                                  min_frac_matching = 0.95)
+```
+
+```{r}
+matches80 %>%
+  arrange(desc(num_non_miss), desc(num_match))
+```
+
+
+For future use using a likelihood based approach to identify individuals may be needed if this quick way to ID duplicates accounting for a moderate-low Genotyping error rate isn't adeqaute for scat samples 
+
+
+We need to check what the within region variability is for the locations with larger sample sizes, so let's make a PCA for the SPS samples and one for the NPS samples. Let's also add in a variable so we can identify the duplicate samples in the PCA.
+Let's only use the polymorphic alleles and let's only use samples with at least 50% GT
+```{r}
+Lib_HetSNP_50 %>%
+  filter(region == "SPS") %>%
+  select(!c(Site, type, region, RawReads, OTreads, PerON, PerGT, locXX,locXY)) -> geno_SPS
+  
+Lib_HetSNP_50 %>%
+  filter(region == "NPS") %>%
+  select(!c(Site, type, region, RawReads, OTreads, PerON, PerGT, locXX,locXY)) -> geno_NPS  
+
+geno_SPS[is.na(geno_SPS)] <- 0
+
+geno_SPS <-column_to_rownames(geno_SPS ,var="Sample")
+
+geno_SPS_genind<-df2genind(geno_SPS ,sep="",ploidy=2,NA.char=0)
+
+geno_SPS_scaleGen<-scaleGen(geno_SPS_genind,NA.method="mean")
+
+geno_SPS_PCA<-dudi.pca(geno_SPS_scaleGen,cent=FALSE,scale=FALSE,scannf=FALSE,nf=4)
+
+SPS_PCA_results<-geno_SPS_PCA$li
+
+SPS_PCA_results<-rownames_to_column(SPS_PCA_results,var="Sample")
+
+head(SPS_PCA_results)
+
+left_join(SPS_PCA_results, metadata, by = "Sample") -> SPS_PCA_results_MD
+
+SPS_PCA_results_MD %>%
+    filter(Sample %in% c('18QY0094', '18QY0095')) -> SPS_duplicates
+
+anti_join(SPS_PCA_results_MD, SPS_duplicates, by = "Sample") -> SPS_individuals
+
+SPS_duplicates %>%
+  mutate(match = "Matched") -> SPS_duplicates
+
+SPS_individuals %>%
+  mutate(match = "Not-matched") -> SPS_individuals
+
+rbind(SPS_duplicates, SPS_individuals) -> SPS_PCA_results_MD
+
+SPS_PCA_results_MD %>%
+  ggplot(aes(x=Axis1,y=Axis2, color = match, shape = type))+
+  geom_point(size = 3) +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+```
+
+```{r}
+geno_NPS[is.na(geno_NPS)] <- 0
+
+geno_NPS <-column_to_rownames(geno_NPS ,var="Sample")
+
+geno_NPS_genind<-df2genind(geno_NPS ,sep="",ploidy=2,NA.char=0)
+
+geno_NPS_scaleGen<-scaleGen(geno_NPS_genind,NA.method="mean")
+
+geno_NPS_PCA<-dudi.pca(geno_NPS_scaleGen,cent=FALSE,scale=FALSE,scannf=FALSE,nf=4)
+
+NPS_PCA_results<-geno_NPS_PCA$li
+
+NPS_PCA_results<-rownames_to_column(NPS_PCA_results,var="Sample")
+
+head(NPS_PCA_results)
+
+left_join(NPS_PCA_results, metadata, by = "Sample") -> NPS_PCA_results_MD
+
+NPS_PCA_results_MD %>%
+    filter(Sample %in% c('16OP0423', '16OP0426', '16OP0190', '16OP0329', '16OP0358', '16OP0368', '16OP0333', '16OP0335')) -> NPS_duplicates
+
+anti_join(NPS_PCA_results_MD, NPS_duplicates, by = "Sample") -> NPS_individuals
+
+NPS_duplicates %>%
+  mutate(match = "Matched") -> NPS_duplicates
+
+NPS_individuals %>%
+  mutate(match = "Not-matched") -> NPS_individuals
+
+rbind(NPS_duplicates, NPS_individuals) -> NPS_PCA_results_MD
+
+NPS_PCA_results_MD %>%
+  ggplot(aes(x=Axis1,y=Axis2, color = match, shape = Sex))+
+  geom_point(size = 3) +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+```
+
+
+
+
+We also need to make an excel of the primers in the final pool so let's pull in the primers for ordering and the round 3 primers, also make one for only the polymorphic SNPs so these can be ordered for another round of optimization with additional SNPs if desired. 
+```{r}
+AllPrimersOrdered <- read.csv(here("GTseq_assay_setup", "PrimersForOrdering.csv"))
+
+Round3Primers <- read.csv(here("Round3PrimersFortesting.csv"))
+
+Round3Primers %>%
+  rename(PrimerName = primer_id) %>%
+  select(PrimerName) -> Round3Primers
+
+left_join(Round3Primers, AllPrimersOrdered, by = "PrimerName") -> Round3ForOrder
+
+write.csv(Round3ForOrder, "Round3PrimersForOrdering.csv",row.names = F)
+
+UniqSNPs <- colnames(UniqueHetSnps)
+as.data.frame(UniqSNPs[2:110]) -> UniqSNPs
+UniqSNPs %>%
+  rename(SNPid = "UniqSNPs[2:110]") -> UniqSNPs
+
+anti_join(UniqSNPs, Round3ForOrder) -> MicrohapsToRENAME
+
+anti_join(UniqSNPs, MicrohapsToRENAME) -> UniqSNPs2
+
+MicrohapsToRENAME %>%
+  separate(SNPid, c("NW","contig","pos","MH"),"_") %>%
+  select(NW,contig,pos) %>%
+  unite("SNPid", NW:pos, sep = "_") -> MicrohapsRENAMED
+
+rbind(UniqSNPs2, MicrohapsRENAMED) -> UniqSNPsList
+
+left_join(UniqSNPsList, Round3ForOrder, by = "SNPid") -> UniqeSNPsOrder
+
+write.csv(UniqeSNPsOrder, "PrimersForSNPsNonMonomorphic.csv", row.names = F)
+
+```
+
+```{r}
+UniqueMeta %>% 
+  filter(type == "feces") %>% 
+  filter(PerGT >= 50)
+```
+

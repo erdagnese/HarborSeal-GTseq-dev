@@ -1,0 +1,351 @@
+---
+title: "SNP_Primer_selection"
+output: html_document
+date: "2022-11-17"
+---
+This script is meant to be used after BatchPrimer3 SNP picking from the fasta created by bedtools. make sure to rename and save as a csv
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r load libraries}
+library(here)
+
+```
+
+BatchPrimer3 only allows 500 Seqs at a time, so we have 6 batches of primer sets to import
+```{r data import}
+B1 <- read.csv(here("Seal_ID_SNP_panel","SNPbatch1_BP3.csv"), header = T)
+B2 <- read.csv(here("Seal_ID_SNP_panel","SNPbatch2_BP3.csv"), header = T)
+B3 <- read.csv(here("Seal_ID_SNP_panel","SNPbatch3_BP3.csv"), header = T)
+B4 <- read.csv(here("Seal_ID_SNP_panel","SNPbatch4_BP3.csv"), header = T)
+B5 <- read.csv(here("Seal_ID_SNP_panel","SNPbatch5_BP3.csv"), header = T)
+B6 <- read.csv(here("Seal_ID_SNP_panel","SNPbatch6_BP3.csv"), header = T)
+```
+
+
+```{r}
+library(tidyverse)
+library(stringr)
+```
+We want all of the SNPs in one DF
+
+```{r}
+Primers <- rbind(B1,B2,B3,B4,B5,B6)
+# so there are 1984 total SNPs to choose from
+
+```
+
+We need better names for the primers so we know they are harbor seals
+```{r}
+Primers %>%
+  separate(col = Seq.ID, into = c("g","db","PrimerID"), sep = "\\|") %>%
+  select(!(g:db)) -> Primers
+
+Primers$PrimerID <- str_replace(Primers$PrimerID, "rs", "Pv")
+
+```
+
+We want to be sure to include the ones that were shared between the Pacific dataset and the Salish Sea seal data
+```{r}
+Pac_SS <- read.csv(here("SNPs_inboth_SS_Pac.csv"), header = T)
+
+Pac_SS %>%
+  mutate(Pv = "Pv") %>%
+  unite("PrimerID", sequence, position, sep="_") %>%
+  unite("PrimerID", Pv, PrimerID, sep = "") -> Pac_SS
+
+# pull out the ones that are in both
+keep <- inner_join(Pac_SS, Primers, by = "PrimerID")
+# 22 of 28 had primers created by BatchPrimer3, so we need to keep those, and 2 for the sex ratio so 24 F/R primer sets to order are for sure. So 744 more sets to choose for 8 96well plates
+
+# we also need to find the microhaplotypes and keep those in too
+# pull in microhap list 
+MicroHaps <- read.csv(here("MicroHapNameList.csv"))
+
+MicroHaps %>%
+  mutate(Pv = "Pv") %>%
+  unite("PrimerID", Pv, PrimerID, sep = "") -> MicroHaps
+
+MicroHapsPrimers <- inner_join(MicroHaps, Primers, by = "PrimerID")
+# so 86 total Primers therefore 43 of the 67 Microhaps had primer sets designed
+MicroHapsPrimers %>%
+  mutate(Primer_type = "MicoHap flanking") -> MicroHapsPrimers
+
+rbind(MicroHapsPrimers, keep) -> keep2 # these are all the microhaps and the SNPs shared between nathans data and the pacific dataset
+
+Primers2 <- anti_join(Primers, keep2, by = "PrimerID") # pull out the rest of the SNPs to randomly select (3840 of the 3968 so removed the 128 that we need to keep aka 64 sets)
+
+keep2 %>%
+  mutate(direction = case_when(Orientation == "FORWARD" ~ "F",
+                               Orientation == "REVERSE" ~ "R")) %>%
+  unite("PrimerName", PrimerID, direction) -> keep2
+
+
+Primers2 %>%
+  filter(Orientation == "FORWARD") -> Forward
+Primers2 %>% 
+  filter(Orientation == "REVERSE") -> Reverse
+```
+
+We need to take out ones where the primer region includes the SNP
+```{r}
+Forward %>%
+  mutate(PrimNum = 1:n()) %>%
+  mutate(direction = "F") -> Forward
+Reverse %>%
+  mutate(PrimNum = 1:n()) %>%
+  mutate(direction = "R")-> Reverse
+
+rbind(Forward,Reverse) -> Primers3
+Primers3 %>%
+  arrange(PrimNum) -> Primers3
+
+# okay so we made the region 100 bp on either side so if the start position is within the primer bp length of the SNP we need to chuck them out let's think about F and R separate
+
+# forward primers keep ones where the Start position is less than 100 minus the lenght of the primer
+Forward %>%
+  filter(case_when(Start < (100 - Len) ~ T,
+         Start > (100 - Len) ~ F)) -> ForwardClean
+
+# okay same for reverse, but assume the start position is the 5' end of the primer so that start minus the length of the primer is more than 100 where the SNP position is.
+Reverse %>%
+  filter(case_when(((Start - Len) > 100)  ~ T,
+         ((Start - Len) < 100) ~ F)) -> ReverseClean
+# now we need to combine these and only keep those which both primers don't have SNP position in the region
+rbind(ForwardClean,ReverseClean) -> AllPrimClean
+AllPrimClean %>%
+  arrange(PrimNum) -> AllPrimClean
+# these include both so we need to keep only ones where the PrimNum is duplicated
+
+AllPrimClean %>%
+  group_by(PrimNum) %>%
+  filter(n()>1) %>%
+  ungroup()-> PrimClean
+
+# okay so now we are down to 3650 total aka 1825 pairs
+PrimClean %>%
+  unite("PrimerName", PrimerID, direction) %>%
+  select(!PrimNum) -> PrimClean2 # this is to bind to keep for alignment
+
+```
+
+
+Let's prepare all of them for aligning, expecting to lose quite a lot
+```{r}
+rbind(keep2,PrimClean2) -> AllForAlign # this is all the microhaps and the cleaned SNPs
+
+```
+
+We also need a fasta of all the primers to run through bowtie to look for non-specific binding
+```{r}
+AllForAlign %>%
+  select(PrimerName,Seq) -> PrimersToAlign
+```
+
+Function to write a fasta from a dataframe
+```{r}
+writeFasta<-function(data, filename){
+  fastaLines = c()
+  for (rowNum in 1:nrow(data)){
+    fastaLines = c(fastaLines, as.character(paste(">", data[rowNum,"PrimerName"], sep = "")))
+    fastaLines = c(fastaLines,as.character(data[rowNum,"Seq"]))
+  }
+  fileConn<-file(filename)
+  writeLines(fastaLines, fileConn)
+  close(fileConn)
+}
+```
+
+```{r}
+writeFasta(PrimersToAlign, "Primers_SNPs_to_Align.fasta")
+```
+
+Use Bowtie2 script to align the Primers to the seal genome to look for non specific binding (SNPsAlignBowtie.py)
+Now bring in the bam file with the filtered primers alignment
+```{r}
+# code and function from https://gist.github.com/SamBuckberry/9914246
+# load the library
+library(Rsamtools)
+
+# specify the bam file you want to import
+bamFile <- "PvSNPsmulti.bam"
+
+# A function to read bam file
+
+readBAM <- function(bamFile){
+
+  bam <- scanBam(bamFile)
+  
+  # A function for collapsing the list of lists into a single list
+  # as per the Rsamtools vignette
+  .unlist <- function (x){
+    x1 <- x[[1L]]
+    if (is.factor(x1)){
+      structure(unlist(x), class = "factor", levels = levels(x1))
+    } else {
+      do.call(c, x)
+    }
+  }
+  
+  bam_field <- names(bam[[1]])
+  
+  list <- lapply(bam_field, function(y) .unlist(lapply(bam, "[[", y)))
+  
+  bam_df <- do.call("DataFrame", list)
+  names(bam_df) <- bam_field
+
+  #return a list that can be called as a data frame
+  return(bam_df)
+}
+
+# Load the bam file
+bam1 <- readBAM(bamFile)
+
+```
+
+Now it is in R, but we need to pull out just the data into a dataframe we can use
+```{r}
+bamdf <- as.data.frame(bam1) # okay so now we have the data with multiple alignments 5257 reads
+
+```
+
+Find Unique alignemnts and keep only those
+```{r}
+bamdf %>%
+  group_by(qname) %>%
+  filter(n()>1) %>%
+  ungroup() -> multiples #this is the list of reads with multiple alignemnts
+#remove them from the dataframe - there are 3758 reads with multiples - but bowtie said 1479 so it must be including those with mismatches which could bind
+anti_join(bamdf, multiples, by = "qname") -> unique # only 1499 reads left, should be 2299 but it is getting rid of all potential multiple alignments aka ones that have 1 or more mismatches in the alignment
+```
+
+```{r}
+bam2 <- read.table("PvSNPsmulti1.txt", sep = '\t', header = F, fill = TRUE)
+
+bam2 %>%
+  select(V1,V2,V3,V4,V5,V6) -> bam2
+
+names(bam2)[1] <- "qname"
+names(bam2)[2] <- "flag"
+names(bam2)[3] <- "rname"
+names(bam2)[4] <- "pos"
+names(bam2)[5] <- "mapq"
+names(bam2)[6] <- "cigar"
+
+# okay so now we have a list of the alignments that don't have any mismatches. In this there should be some that are multiple so let's do the same thing to pull out multiples
+
+bam2 %>%
+  group_by(qname) %>%
+  filter(n()>1) %>%
+  ungroup() -> multiples2 # that was 1600 reads
+
+anti_join(bam2, multiples2, by = "qname") -> unique2 # okay that kept 2347 reads, but these include reads that may align elsewhere but have a mismatch in the primer region
+
+```
+We want to do the following chunks for both the more restrictive filtering and the less restrictive one to primer pairs in both and compare, so prioritize the ones that are more restrictive, and if we need to order more then we can add in some others.
+
+We need to further look for ones that align to not the proper location to remove them and for ones where the paired end is missing
+```{r}
+unique %>%
+  select(qname,flag,rname,pos) %>%
+  mutate(PrimerName = qname) %>%
+  separate(qname, c("Pv","contig","SNPposition","dir"), sep = "_") %>%
+  select(!Pv) %>%
+  mutate(NW = "NW") %>%
+  unite("contig", NW,contig, sep="_") -> Pvunique
+
+# let's find ones where the contig and rname match so we can check if the alignment are on the right contig
+Pvunique %>%
+  filter(case_when(contig == rname ~ T,
+                   contig != rname ~ F)) -> Pvunique1 #all 1499 were kept which is good
+
+# now let's combine the contig and SNP position so we can select only rows with primers that have both F and R
+
+Pvunique1 %>%
+  unite("SNPid", contig, SNPposition, sep = "_") %>%
+  group_by(SNPid) %>%
+  filter(n()>1) %>%
+  ungroup() -> Pvunique1a # so there are 938 left which is only 469 pairs but we want to make sure the ones for the microhaps and the shared set are in there if possible
+  
+```
+
+let's see if there are any we can pull from the less restrictive set
+```{r}
+unique2 %>%
+  select(qname,flag,rname,pos) %>%
+  mutate(PrimerName = qname) %>%
+  separate(qname, c("Pv","contig","SNPposition","dir"), sep = "_") %>%
+  select(!Pv) %>%
+  mutate(NW = "NW") %>%
+  unite("contig", NW,contig, sep="_") -> Pvunique2
+
+# let's find ones where the contig and rname match so we can check if the alignment are on the right contig
+Pvunique2 %>%
+  filter(case_when(contig == rname ~ T,
+                   contig != rname ~ F)) -> Pvunique2 # all 2347 were kept, good all on the right contigs
+# now let's combine the contig and SNP position so we can select only rows with primers that have both F and R
+
+Pvunique2 %>%
+  unite("SNPid", contig, SNPposition, sep = "_") %>%
+  group_by(SNPid) %>%
+  filter(n()>1) %>%
+  ungroup() -> Pvunique2a # so there are 2272 left which is only 1136 pairs 
+
+# now we need to pull out the ones that are only in the less restrictive one
+anti_join(Pvunique2a,Pvunique1a, by = "SNPid") -> PvuniqueALT # 1334 reads so an additional 667 primer sets
+
+```
+
+Okay, so we want the primers for the microhaps and the ones that are shared between Pac and nathans and the restrictive set, how many is that?
+```{r}
+# join the unique ones with the set including the microhaps and shared SNPs
+inner_join(Pvunique1a, keep2, by = "PrimerName") -> PrioritySets # only 38 primers (19 pairs)
+
+# join the mismatched and unique ones with the set including the microhaps and shared SNPs
+inner_join(Pvunique2a, keep2, by = "PrimerName") -> PrioritySets2 # only 92 primers (46 pairs) form the initial 128 primers so lost 36 (18 sets had mulitple equal exact alignments)
+# lets' take all of those for ordering so we have 46 primer sets so far
+
+# then let's see how many we have if we take the set of primers that are unique
+inner_join(Pvunique1a, PrimClean2, by = "PrimerName") -> OtherSets # have 900 so 450 sets 
+# so we will have a total of 496 pairs to order, I would prefer about 600 to choose from so let's randomly select from the potential mismatches
+
+inner_join(PvuniqueALT, PrimClean2, by = "PrimerName") -> AdditionalSets # 1280 reads
+
+```
+
+If we still need to randomly select ones do so at the very end here
+```{r}
+#need to remake the PrimNum for the random number generator
+AdditionalSets %>%
+  filter(dir == "F") %>%
+  mutate(PrimNum = 1:n())  -> AddForward
+AdditionalSets %>%
+  filter(dir == "R") %>%
+  mutate(PrimNum = 1:n()) -> AddReverse
+
+rbind(AddForward,AddReverse) -> AdditionalSets
+AdditionalSets %>%
+  arrange(PrimNum) -> AdditionalSets
+
+RandV <- sample(1:640, 78, replace = F) # this will get us 576 total sets to order (don't forget the sex chromosome primers)
+
+AdditionalSets %>%
+  subset(PrimNum %in% RandV) -> RandomSelect
+
+RestPrim <- anti_join(AdditionalSets, RandomSelect)
+
+write.csv(RestPrim, "PrimersNotSelected.csv", row.names = F)
+
+RandomSelect %>%
+  select(!PrimNum) -> RandomSelect
+
+rbind(PrioritySets2, OtherSets, RandomSelect) -> PrimersFinal
+
+write.csv(PrimersFinal, "PrimersForOrdering.csv", row.names = F)
+```
+
+
+Use the template from WDFW to use their excel sheet to add the adapters to the primers and then port them into the ordering sheet

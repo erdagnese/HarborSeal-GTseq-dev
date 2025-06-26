@@ -1,0 +1,92 @@
+---
+title: "ProbeSeq_revision"
+author: "Erin D'Agnese"
+date: "2024-09-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This script is used to modify previous probeseq files to reflect the primers/SNPs included in the new one necessary for pipeline use.
+```{r}
+library(here)
+library(tidyverse)
+
+```
+
+bring in the appropriate files
+```{r}
+prev_probeseq <- read.csv(here("GTseqOptimizationRd6", "ProbeSeq.csv"), header = F)
+probeseq_1 <- read.csv(here("GTseq_September2024", "SelectedSNPs_ProbeSeq.csv"), header = F)
+new_primer_list <- read.csv(here("GTseq_September2024", "GTSeq_RdSix_FinalPrimers.csv"), header = T)
+```
+
+
+There seem to be some missing information in the probeseq_1 that Alex started
+```{r}
+probeseq_1 %>% 
+  dplyr::rename(SNPid = V1) %>% 
+  dplyr::rename(A1 = V2) %>% 
+  dplyr::rename(A2 = V3) %>% 
+  dplyr::rename(Probe1 = V4) %>% 
+  dplyr::rename(Probe2 = V5) %>% 
+  dplyr::rename(Primer = V6) -> probeseq_1
+
+prev_probeseq %>% 
+  dplyr::rename(SNPid = V1) %>% 
+  dplyr::rename(A1 = V2) %>% 
+  dplyr::rename(A2 = V3) %>% 
+  dplyr::rename(Probe1 = V4) %>% 
+  dplyr::rename(Probe2 = V5) %>% 
+  dplyr::rename(Primer = V6) -> prev_probeseq
+
+#pull out the rows with NAs to correct them with the previous info
+probeseq_1 %>% 
+  filter(is.na(Probe1)) %>% 
+  select(SNPid) -> probeseq_miss
+left_join(probeseq_miss,prev_probeseq, by= "SNPid") -> probeseq_fix
+#17 missing but not in the rd 6 probeseq... let's see if they are in round 5
+Rd5_AssayInfo <- read.table(here("AssayInfo_Round5_ReTry.txt"), sep = "\t", header = F)
+
+Rd5_AssayInfo %>% 
+  dplyr::rename(SNPid = V1) %>% 
+  dplyr::rename(Probe1 = V3) %>% 
+  dplyr::rename(Probe2 = V4) %>% 
+  dplyr::rename(Primer = V2) -> Rd5_AssayInfo
+
+left_join(probeseq_miss,Rd5_AssayInfo, by="SNPid") -> probeseq_fix
+#yep, that did it now we gotta pull out the Alleles
+
+```
+
+Let's make the major and minor allele columns
+```{r}
+probeseq_fix %>% 
+  mutate(Probe1_A1 = Probe1) %>% 
+  mutate(Probe2_A2 = Probe2) %>% 
+  separate(Probe1_A1, into = c("beforeA1","A1","afterA1"), sep = c(7,8)) %>% 
+  separate(Probe2_A2, into = c("beforeA2","A2","afterA2"), sep = c(7,8)) %>% 
+  select(SNPid, A1, A2, Probe1, Probe2, Primer) -> probeseq_fix 
+
+anti_join(probeseq_1,probeseq_miss) -> probeseq_2
+
+rbind(probeseq_fix,probeseq_2) -> probeseq_3
+
+probeseq_3 %>% 
+  mutate(Cor1 = 0) %>% 
+  mutate(Cor2 = 0) -> probeseq_finalrd
+
+write.table(probeseq_finalrd, file=here::here("GTseq_September2024","ProbeSeq.csv"), sep = ",",row.names=FALSE, col.names = F)
+
+```
+
+we also need an assayinfo.txt file
+```{r}
+probeseq_3 %>% 
+  select(SNPid,Primer,Probe1,Probe2) -> AssayInfo
+
+write.table(AssayInfo, file=here::here("GTseq_September2024","AssayInfo.txt"), sep = "\t",row.names=FALSE, col.names = F)
+```
+

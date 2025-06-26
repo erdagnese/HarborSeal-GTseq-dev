@@ -1,0 +1,1786 @@
+---
+title: "9-GTscore_IndivID"
+author: "Erin D'Agnese"
+date: "2024-10-21"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This script is to take in the GTscore outputs and determine genotyping success, sex ID, and identify the individuals in the samples that were resampled
+
+Load libraries
+```{r}
+library(here)
+library(rubias)
+library(tidyverse)
+library(related)
+library(genepop)
+library(adegenet)
+```
+
+Load in the results output through the GTscore pipeline, the Haplotype results are really the only ones we need because, the single SNPs results are identical in the Single SNP outputs to the single SNPs results in the haplotype outputs
+```{r}
+polyGenResults_haplotypes_Sep <- read.table(here("GTseq_September2024","polyGenResults_haplotypes.txt"), sep="\t",header=TRUE,check.names = F)
+haplotype_rubias_Sep <-read.table(here("GTseq_September2024","polyGenResults_haplotypes_rubias.txt"), sep="\t", header=TRUE,check.names = F)
+metadata_Sep <- read.csv(here("GTseq_September2024","GTseq_Sep2024_metadata.csv"), header = TRUE, check.names = F)
+rubias_metadata_Sep <- read.delim(here("GTseq_September2024","sample_metadata_rubias.txt"),header=TRUE)
+
+# bring in the allele reads so we can specifically look at the reads to each sex marker beyond the genotyping calls
+Locireads_Sep <- read.table(here("GTseq_September2024", "AlleleReads_haplotypes.txt"), sep="\t", header=TRUE,check.names = F)
+
+```
+
+let's check the outputs produced by using the 155 compared to the 211 rerun of the November data
+```{r}
+polyGenResults_haplotypes_Nov1 <- read.table(here("GTseq_November2024", "GTscore_output_155SNPsInput","polyGenResults_haplotypes.txt"), sep="\t",header=TRUE,check.names = F)
+haplotype_rubias_Nov1  <-read.table(here("GTseq_November2024","GTscore_output_155SNPsInput","polyGenResults_haplotypes_rubias.txt"), sep="\t", header=TRUE,check.names = F)
+
+rubias_metadata_Nov  <- read.delim(here("GTseq_November2024","GTscore_metadata_Nov2024_rubias.txt"),header=TRUE)
+
+# bring in the allele reads so we can specifically look at the reads to each sex marker beyond the genotyping calls
+Locireads_Nov1 <- read.table(here("GTseq_November2024","GTscore_output_155SNPsInput", "AlleleReads_haplotypes.txt"), sep="\t", header=TRUE,check.names = F)
+
+#now the re-run with the 211
+polyGenResults_haplotypes_Nov2 <- read.table(here("GTseq_November2024","polyGenResults_haplotypes.txt"), sep="\t",header=TRUE,check.names = F)
+haplotype_rubias_Nov2  <-read.table(here("GTseq_November2024","polyGenResults_haplotypes_rubias.txt"), sep="\t", header=TRUE,check.names = F)
+# bring in the allele reads so we can specifically look at the reads to each sex marker beyond the genotyping calls
+Locireads_Nov2 <- read.table(here("GTseq_November2024", "AlleleReads_haplotypes.txt"), sep="\t", header=TRUE,check.names = F)
+
+```
+
+
+```{r}
+Samplemap <- read.csv(here("AllHarborSealExtract.csv"), header = T)
+Scatlog <- read.csv(here("ScatLogMetadata.csv"), header = T)
+
+#first have to fix the ScatID in the samplemap so that the Pv18 all have 4 
+Samplemap %>% filter(str_detect(ScatID, 'Pv18')) -> extracts18
+Samplemap %>% filter(!str_detect(ScatID, 'Pv18')) -> extracts_rest
+
+extracts18 %>% separate(ScatID, c("Pv","Num")) -> extracts18
+str_pad(extracts18$Num, width = 4, side="left", pad="0", use_width =TRUE) -> extracts18_2
+extracts18$Num <- extracts18_2
+extracts18 %>% unite("ScatID", Pv:Num, sep = "-") -> extracts18
+rbind(extracts_rest,extracts18) -> Samplemap
+
+
+metadata <- left_join(Samplemap,Scatlog, by = c("ScatID" = "Sample_ID")) 
+metadata %>% select(!c("WellLocation","Row","Column")) -> metadata
+
+write.csv(metadata, "All_extract_scat_metadata.csv", row.names = F)
+
+#now pull out the ones that are in the November run
+
+left_join(rubias_metadata_Nov,metadata, by = c("indiv"="SampleID")) -> metadata_Nov
+
+rubias_metadata_Nov %>%   
+  mutate(indiv = if_else(indiv %in% duplicated_samples,
+                        paste0(indiv, "_2"),
+                        indiv)) -> rubias_metadata_Nov
+
+
+```
+
+Let's see which Loci are not getting any reads in all the allele reads outputs, need to check whether the Nov one match the Sep ones, and that the loci kept in the Nov runs are the same ones
+```{r}
+# the outputs of the allelereads truncated some sampleID's so let's fix that first
+# Function to make column names unique by adding numbered suffixes
+fix_duplicate_columns <- function(df) {
+  # Get current column names
+  current_names <- names(df)
+  
+  # For first column (if it's blank)
+  if (current_names[1] == "") {
+    current_names[1] <- "LocusID"
+  }
+  
+  # Process all names after the first column
+  names_after_first <- current_names[-1]
+  
+  # Create a named vector to track counts
+  name_counts <- table(names_after_first)
+  
+  # For each duplicated name, add appropriate suffix
+  for (name in names(name_counts)[name_counts > 1]) {
+    # Find all positions of this name
+    positions <- which(names_after_first == name)
+    # Add suffixes (-1, -2, etc.) to all but the first occurrence
+    for (i in seq_along(positions)[-1]) {
+      names_after_first[positions[i]] <- paste0(name, "_", i-1)
+    }
+  }
+  
+  # Combine back with first column name
+  new_names <- c(current_names[1], names_after_first)
+  
+  # Apply new names to dataframe
+  names(df) <- new_names
+  return(df)
+}
+
+
+Locireads_Sep <- Locireads_Sep %>% fix_duplicate_columns()
+Locireads_Nov1 <- Locireads_Nov1 %>% fix_duplicate_columns() #the neg_and blanks and NTCs are out of order due to naming structure of the filenames to start with
+#Locireads_Nov2 <- Locireads_Nov2 %>% fix_duplicate_columns()
+
+Locireads_Sep %>%
+  filter(if_all(-1, ~. == "0,0")) %>% 
+  select(LocusID) -> Sep_no_reads_loci
+
+Locireads_Sep %>%
+    filter(if_any(-1, ~. != "0,0")) -> Sep_reads_loci
+
+Locireads_Nov1 %>%
+  filter(if_all(-1, ~. == "0,0")) %>% 
+  select(LocusID) -> Nov1_no_reads_loci
+#Locireads_Nov2 %>%
+ # filter(if_all(-1, ~. == "0,0")) %>% 
+  #select(LocusID) -> Nov2_no_reads_loci
+
+
+inner_join(Nov1_no_reads_loci,Nov2_no_reads_loci) -> Nov_no_read_both
+# okay so 25 loci that are in the 155 input are also missing from the 211, so the input file is at least correct
+
+inner_join(Nov1_no_reads_loci,Sep_no_reads_loci) -> Sep_Nov_no_read_both
+inner_join(Sep_reads_loci,Nov1_no_reads_loci) -> NovNoRds_SepReads
+NovNoRds_SepReads %>% 
+  select()
+#okay so there are none shared so that means that none of the ones that
+# so it is looking like we picked wrong ones to toss?
+#now we need to see if we messed up and got rid of loci that got reads of primer/probe in the September run and which loci should have been kept
+
+library(tidyverse)
+
+library(tidyverse)
+
+compare_loci_status <- function(df1, df2, df1_name = "DataFrame1", df2_name = "DataFrame2") {
+  # Function to check if a row is all zeros (excluding LocusID column)
+  check_row_status <- function(row) {
+    if (all(as.character(row[-1]) == "0,0")) {
+      return("All 0,0")
+    } else {
+      return("Has Data")
+    }
+  }
+  
+  # Process each dataframe to get LocusID and status
+  get_status <- function(df) {
+    df %>%
+      rename(LocusID = 1) %>%
+      rowwise() %>%
+      mutate(status = check_row_status(cur_data())) %>%
+      select(LocusID, status)
+  }
+  
+  # Get status for each dataframe
+  df1_status <- get_status(df1) %>%
+    rename(!!df1_name := status)
+  
+  df2_status <- get_status(df2) %>%
+    rename(!!df2_name := status)
+  
+  # Combine results from both dataframes
+  full_join(df1_status, df2_status, by = "LocusID") %>%
+    arrange(LocusID)
+}
+
+# Example usage:
+# comparison_df <- compare_loci_status(Locireads_Sep, Locireads_Nov, "September", "November")
+
+# Example usage:
+comparison_LociSep_Nov <- compare_loci_status(Locireads_Sep_fix, Locireads_Nov1, "September", "November")
+
+# To find interesting patterns:
+# Loci that changed between datasets
+changed_loci <- comparison_LociSep_Nov %>%
+  filter(!is.na(September) & !is.na(November) & September != November)
+#these are 25 loci that 
+
+# Loci only in September
+sep_only <- comparison_LociSep_Nov %>%
+  filter(!is.na(September) & is.na(November))
+#these 59 are all 0 in September and were removed from the panel so they aren't in November, so that is good
+
+Both <- comparison_LociSep_Nov %>% 
+  filter(September == November)
+#130 loci that have data in both, so that is good
+
+#so it looks like the 25 that got reads in September didn't get many and likely were reads from tissue, so everything is fine. Just Use Nov1 moving forward
+
+#So really we just need to keep the rows for the sex markers
+Locireads_Sep %>% filter(str_detect(LocusID, "ZFX|ZFY|SRY")) -> SexLociSep
+
+Locireads_Nov1 %>% filter(str_detect(LocusID, "ZFX|ZFY|SRY")) -> SexLociNov
+
+```
+
+
+```{r}
+read_genepop_to_df <- function(file_path) {
+  # Read the file
+  lines <- readLines(file_path)
+  
+  # Skip the first line (title) and find where the population data begins
+  lines <- lines[-1]  # Remove title line
+  pop_line <- which(lines == "Pop")
+  
+  # Extract locus names (all lines before "Pop")
+  locus_names <- lines[1:(pop_line-1)]
+  locus_names <- trimws(locus_names)
+  
+  # Read the data lines (everything after "Pop")
+  data_lines <- lines[(pop_line+1):length(lines)]
+  
+  # Process each data line
+  split_lines <- strsplit(data_lines, ",")
+  
+  # Extract and clean sample IDs
+  sample_ids <- sapply(split_lines, function(x) {
+    id <- trimws(x[1])
+    
+    # Remove leading 'X' from numeric IDs
+    if(grepl("^X\\d", id)) {
+      id <- substr(id, 2, nchar(id))
+    }
+    
+    # Replace all dots with dashes
+    id <- gsub("\\.", "-", id)
+    
+    return(id)
+  })
+  
+  # Extract genotype data and split by whitespace
+  genotypes <- sapply(split_lines, function(x) {
+    geno <- strsplit(trimws(x[2]), "\\s+")[[1]]
+    geno[geno != ""]
+  })
+  
+  # Convert to dataframe
+  df <- as.data.frame(matrix(unlist(genotypes), 
+                            nrow=length(sample_ids), 
+                            byrow=TRUE))
+  
+  # Add sample IDs as first column
+  df <- cbind(SampleID=sample_ids, df)
+  
+  # Add column names
+  colnames(df)[-1] <- locus_names
+  
+  return(df)
+}
+
+#bring in the genepop files
+genePopHap_Sep <- read_genepop_to_df(here("GTseq_September2024", "polyGenResults_haplotype_genepop.txt"))
+genePopHap_Nov1 <- read_genepop_to_df(here("GTseq_November2024","GTscore_output_155SNPsInput", "polyGenResults_haplotype_genepop.txt"))
+#these we can use in related or demerelate or adegenet packages to do analyses later but lets do some other handling of all the data
+
+
+```
+
+
+
+Formatting to do all the things we need
+```{r}
+#first the rubias export, messed up the column ordering so let's fix that for each one
+haplotype_rubias_Sep %>% relocate(indiv, .before = sample_type)  %>% select(!sample_type) -> haplotype_rubias_Sep
+haplotype_rubias_Nov1 %>% relocate(indiv, .before = sample_type)  %>% select(!sample_type) -> haplotype_rubias_Nov
+
+duplicated_samples <- intersect(haplotype_rubias_Nov$indiv, haplotype_rubias_Sep$indiv)
+
+haplotype_rubias_Nov %>% mutate(indiv = if_else(indiv %in% duplicated_samples,
+                        paste0(indiv, "_2"),
+                        indiv)) -> haplotype_rubias_Nov
+
+#now we need to make a column in the metadata called repunit for the rubias package to work, let's do this with the metadata so we can do this everytime
+metadata_Sep %>% select(indiv, SampleID, Population,Collection_Location,day,month,year) %>% 
+  left_join(rubias_metadata_Sep,., by = "indiv") %>% 
+  mutate(repunit = case_when(str_detect(sample_type, "feces") ~ NA,
+                             str_detect(sample_type, "eDNA") ~ NA,
+                             str_detect(sample_type, "reference") ~ "tissue",
+                             str_detect(sample_type, "qualitycontrol") ~ NA,
+                             str_detect(sample_type, "negcontrol") ~ NA)) %>% 
+  mutate(collection = case_when(str_detect(sample_type, "feces") ~ "SPSfeces",
+                             str_detect(sample_type, "eDNA") ~ "eDNA",
+                             str_detect(sample_type, "reference") ~ "tissue",
+                             str_detect(sample_type, "qualitycontrol") ~ "QC",
+                             str_detect(sample_type, "negcontrol") ~ "NC")) -> metadata_Sep_rub
+
+metadata_Sep_rub %>% filter(sample_type == "qualitycontrol") %>% select(indiv, sample_type, repunit, collection) -> QCsamples_Sep
+metadata_Sep_rub %>% filter(sample_type != "qualitycontrol") %>% select(!c(sample_type,repunit,collection))-> metadata_Sep_rub1 
+metadata_Sep_rub %>% filter(sample_type != "qualitycontrol") -> metadata_Sep_rub2
+
+
+QCsamples_Sep %>%  
+  mutate(clean_indiv = case_when(str_detect(indiv, "^qc") ~ str_remove(indiv, "^qc"),TRUE ~ indiv)) %>% 
+  left_join(.,metadata_Sep_rub1, by = c("clean_indiv"= "indiv")) %>% select(indiv,sample_type,SampleID,Population,Collection_Location,day,month,year,repunit,collection) -> QCsamples_Sep
+
+rbind(metadata_Sep_rub2,QCsamples_Sep) -> metadata_Sep_rub
+
+left_join(metadata_Sep_rub, haplotype_rubias_Sep , by = c("indiv"))-> haplotype_rubias_md_Sep  
+
+
+```
+
+```{r}
+duplicated_samples <- intersect(metadata_Nov$indiv, metadata_Sep$indiv)
+
+metadata_Nov %>% 
+  mutate(indiv = if_else(indiv %in% duplicated_samples,
+                        paste0(indiv, "_2"),
+                        indiv)) -> metadata_Nov
+
+metadata_Nov %>% 
+  mutate(Population = case_when(str_detect(sample_type, "feces")~"SPS")) %>% 
+  select(indiv, ScatID, Population,Collection_Location,Collection_Date) %>% 
+  separate(Collection_Date, c("day", "month", "year")) %>% 
+  left_join(rubias_metadata_Nov,., by = "indiv") %>% 
+  mutate(repunit = case_when(str_detect(sample_type, "feces") ~ NA,
+                             str_detect(sample_type, "blank") ~ NA,
+                             str_detect(sample_type, "reference") ~ "tissue",
+                             str_detect(sample_type, "qualitycontrol") ~ NA,
+                             str_detect(sample_type, "negcontrol") ~ NA)) %>% 
+  mutate(collection = case_when(str_detect(sample_type, "feces") ~ "SPSfeces",
+                             str_detect(sample_type, "blank") ~ "NC",
+                             str_detect(sample_type, "reference") ~ "tissue",
+                             str_detect(sample_type, "qualitycontrol") ~ "QC",
+                             str_detect(sample_type, "negcontrol") ~ "NC")) -> metadata_Nov_rub
+
+metadata_Nov_rub %>% filter(sample_type == "qualitycontrol") %>% select(indiv, sample_type, repunit, collection) -> QCsamples_Nov
+metadata_Nov_rub %>% filter(sample_type != "qualitycontrol") %>% select(!c(sample_type,repunit,collection))-> metadata_Nov_rub1 
+metadata_Nov_rub %>% filter(sample_type != "qualitycontrol") -> metadata_Nov_rub2
+
+
+QCsamples_Nov %>%  
+  mutate(clean_indiv = case_when(str_detect(indiv, "^qc") ~ str_remove(indiv, "^qc"),TRUE ~ indiv)) %>% 
+  left_join(.,metadata_Nov_rub1, by = c("clean_indiv"= "indiv")) %>% select(indiv,sample_type,ScatID,Population,Collection_Location,day,month,year,repunit,collection) -> QCsamples_Nov
+
+rbind(metadata_Nov_rub2,QCsamples_Nov) -> metadata_Nov_rub
+
+left_join(metadata_Nov_rub, haplotype_rubias_Nov , by = c("indiv"))-> haplotype_rubias_md_Nov  
+
+haplotype_rubias_md_Nov %>% rename("SampleID" = "ScatID") -> haplotype_rubias_md_Nov
+```
+
+
+Make sure that any loci that didn't work at all are removed
+This function removes the pairs of loci that only contain NAs aka none of the samples have genotyping calls for the locus
+```{r}
+remove_na_pairs <- function(df) {
+  # Get column names starting from the 10th column
+  cols <- colnames(df)[11:ncol(df)]
+  
+  # Identify paired columns
+  paired_cols <- cols[seq(1, length(cols), by = 2)]
+  
+  # Vector to store columns to keep
+  cols_to_keep <- c(colnames(df)[1:10])  # Keep first 9 columns
+  
+  for (i in seq_along(paired_cols)) {
+    col1 <- paired_cols[i]
+    col2 <- paste0(col1, ".1")
+    
+    # Check if both columns are entirely NA
+    if (all(is.na(df[[col1]])) && all(is.na(df[[col2]]))) {
+      next  # Skip this pair
+    } else {
+      cols_to_keep <- c(cols_to_keep, col1, col2)
+    }
+  }
+  
+  # Return the dataframe with only the kept columns
+  df[, cols_to_keep]
+}
+```
+
+We also want to make sure that the remaining loci have variable allelic calling just in case any are monomorphic across the entire population
+```{r}
+identify_constant_pairs <- function(df) {
+  # Get column names starting from the 10th column
+  cols <- colnames(df)[11:ncol(df)]
+  
+  # Identify paired columns
+  paired_cols <- cols[seq(1, length(cols), by = 2)]
+  
+  # List to store constant pairs
+  constant_pairs <- list()
+  
+  for (i in seq_along(paired_cols)) {
+    col1 <- paired_cols[i]
+    col2 <- paste0(col1, ".1")
+    
+    # Get non-NA rows
+    non_na_rows <- !is.na(df[[col1]]) & !is.na(df[[col2]])
+    
+    if (sum(non_na_rows) > 0) {
+      # Check if all non-NA pairs are identical
+      unique_pairs <- unique(df[non_na_rows, c(col1, col2)])
+      if (nrow(unique_pairs) == 1) {
+        constant_pairs[[length(constant_pairs) + 1]] <- c(col1, col2)
+      }
+    }
+  }
+  
+  return(constant_pairs)
+}
+```
+
+If we want to remove the pairs that are constant in the samples use this function
+```{r}
+remove_constant_pairs <- function(df) {
+  constant_pairs <- identify_constant_pairs(df)
+  columns_to_remove <- unlist(constant_pairs)
+  
+  if (length(columns_to_remove) > 0) {
+    df <- df[, !(names(df) %in% columns_to_remove)]
+  }
+  
+  return(df)
+}
+```
+
+
+Let's clean up the dataframe to remove Loci that didn't work
+```{r}
+haplotype_Sep_clean <- remove_na_pairs(haplotype_rubias_md_Sep)
+
+#let's ID which ones it removed:
+haplotype_constant_pairs <- identify_constant_pairs(haplotype_Sep_clean)
+# Print the constant pairs
+for (pair in haplotype_constant_pairs) {
+  cat("Constant pair found:", pair[1], "and", pair[2], "\n")
+}#
+#okay so one was a haplotype because now there are 7
+```
+
+```{r}
+haplotype_Nov_clean <- remove_na_pairs(haplotype_rubias_md_Nov)
+
+#let's ID which ones it removed:
+haplotype_constant_pairs <- identify_constant_pairs(haplotype_Nov_clean)
+# Print the constant pairs
+for (pair in haplotype_constant_pairs) {
+  cat("Constant pair found:", pair[1], "and", pair[2], "\n")
+}#
+#okay so one was a haplotype because now there are 3, so 4 of the monomorphic loci were removed in the repool/didn't work in scat
+
+#there are some duplicate rows of data so let's remove duplicates
+haplotype_Nov_clean %>% 
+  unique() %>% 
+  mutate(collection = case_when(
+    is.na(collection) ~ "NC",
+    TRUE ~ as.character(collection)
+  )) -> haplotype_Nov_clean
+
+```
+
+
+Now the ones we actually think are matches
+```{r}
+matchesHaploSNP_Sep <- close_matching_samples(D = haplotype_Sep_clean, gen_start_col = 11,
+                                  min_frac_non_miss = 0.40,
+                                  min_frac_matching = 0.85)
+                                              
+```
+
+
+```{r}
+matchesHaploSNP_Nov <- close_matching_samples(D = haplotype_Nov_clean, gen_start_col = 11,
+                                  min_frac_non_miss = 0.40,
+                                  min_frac_matching = 0.85)
+```
+
+```{r}
+# Get genetic marker names from both datasets
+sep_markers <- names(haplotype_Sep_clean)[11:ncol(haplotype_Sep_clean)]
+nov_markers <- names(haplotype_Nov_clean)[11:ncol(haplotype_Nov_clean)]
+
+# Find common markers
+common_markers <- intersect(sep_markers, nov_markers)
+
+# Subset to common columns
+cols_to_keep <- c(names(haplotype_Nov_clean)[1:10], common_markers)
+haplotype_Nov_clean_subset <- haplotype_Nov_clean[, cols_to_keep]
+haplotype_Sep_clean_subset <- haplotype_Sep_clean[, cols_to_keep]
+
+haplotype_Sep_clean_subset %>% mutate(Run = "Sep2024") %>% relocate(Run, .after = "sample_type") -> haplotype_Sep_clean_subset
+
+haplotype_Nov_clean_subset %>% mutate(Run = "Nov2024") %>% relocate(Run, .after = "sample_type") -> haplotype_Nov_clean_subset
+
+rbind(haplotype_Sep_clean_subset,haplotype_Nov_clean_subset) -> all_haplotype_clean_subset
+
+# Add suffix to duplicate indiv names from Nov2024 run
+all_haplotype_clean_subset <- all_haplotype_clean_subset %>%
+  group_by(indiv) %>%
+  mutate(indiv = case_when(
+    n() > 1 & Run == "Nov2024" ~ paste0(indiv, "_2"),
+    TRUE ~ indiv
+  )) %>%
+  ungroup()
+
+```
+
+```{r}
+matchesHaploSNP_ALL <- close_matching_samples(D = all_haplotype_clean_subset, gen_start_col = 12,
+                                  min_frac_non_miss = 0.40,
+                                  min_frac_matching = 0.85)
+```
+
+
+
+Samples with at least 50% Genotyping success for the loci that worked
+```{r}
+calculate_sample_quality <- function(df) {
+  # Get column names starting from the 10th column
+  geno_cols <- colnames(df)[12:ncol(df)]
+  
+  # Identify paired columns
+  paired_cols <- geno_cols[seq(1, length(geno_cols), by = 2)]
+  total_loci <- length(paired_cols)
+  
+  # Create a vector to store results
+  sample_quality <- data.frame(
+    Sample = df$indiv,  # Using indiv column as sample identifier
+    Genotyped_Loci = NA,
+    GTperc = NA
+  )
+  
+  # For each sample
+  for(i in 1:nrow(df)) {
+    genotyped_count <- 0
+    
+    # Check each pair of columns
+    for(j in seq_along(paired_cols)) {
+      col1 <- paired_cols[j]
+      col2 <- paste0(col1, ".1")
+      
+      # If either value in the pair is not NA, count it as genotyped
+      if(!is.na(df[i, col1]) || !is.na(df[i, col2])) {
+        genotyped_count <- genotyped_count + 1
+      }
+    }
+    
+    # Calculate percentage
+    sample_quality$Genotyped_Loci[i] <- genotyped_count
+    sample_quality$GTperc[i] <- (genotyped_count / total_loci) * 100
+  }
+  
+  # Round GTperc to 2 decimal places
+  sample_quality$GTperc <- round(sample_quality$GTperc, 2)
+  
+  return(sample_quality)
+}
+
+# Use the function
+All_sample_metrics <- calculate_sample_quality(all_haplotype_clean_subset)
+
+# Print summary statistics
+cat("\nSummary of Genotyping Quality:\n")
+print(summary(All_sample_metrics$GTperc))
+
+#there is something weird about the negative controls in the second run, many have the same 54 SNPs called, in the same way... 
+
+```
+
+Genotyping success metrics
+```{r}
+#fetch the number of samples with at least 50% GT
+All_sample_metrics %>%  filter(GTperc >= 50) -> All_samples_50
+#143 scats
+
+
+
+```
+
+do all pariwise to see what the spread of matching genotypes and their proportion of matched to nonmissing loci genotypes there are
+```{r}
+#first pull out the data only for the samples that were genotyped at least at 50%
+All_samples_50 %>% dplyr::rename("indiv"="Sample") %>% left_join(.,all_haplotype_clean_subset) -> All_samples_50_clean
+
+
+matchesHaploSNP_ALL_50 <- close_matching_samples(D = All_samples_50_clean, gen_start_col = 14,
+                                  min_frac_non_miss = 0.40,
+                                  min_frac_matching = 0.85)
+```
+
+
+```{r}
+AllpairwiseHaploSNP <- close_matching_samples(D = All_samples_50_clean, gen_start_col = 14,
+                                  min_frac_non_miss = 0.01,
+                                  min_frac_matching = 0.01)
+
+AllpairwiseHaploSNP %>% 
+  mutate(propmatch = num_match/num_non_miss) %>% 
+  relocate(propmatch, .after = num_match) -> AllpairwiseHaploSNP
+
+#now we need to bring in the metadata for both pairs, so gotta join twice after modifying the metadata
+all_haplotype_clean_subset %>% select(c(indiv,sample_type,Run,SampleID,Population,Collection_Location,day,month,year)) -> metadata_df
+
+left_join(metadata_df, All_sample_metrics, by= c("indiv"="Sample")) -> metadata_df
+                                              
+```
+
+How many are resampled individual
+```{r}
+library(igraph)
+
+create_individual_matches <- function(matches_df) {
+  # Create an edge list from both indiv_1 to indiv_2 relationships
+  edges <- rbind(
+    select(matches_df, from = indiv_1, to = indiv_2),
+    select(matches_df, from = indiv_2, to = indiv_1)  # Add reverse relationships
+  ) %>% distinct()  # Remove duplicates
+  
+  # Create a graph from the edge list
+  g <- graph_from_data_frame(edges, directed = FALSE)
+  
+  # Find all connected components (groups of matched samples)
+  components <- components(g)
+  
+  # Create a mapping of original IDs to new individual_ID
+  id_mapping <- data.frame(
+    original_id = names(components$membership),
+    group = components$membership
+  ) %>%
+    arrange(group) %>%
+    group_by(group) %>%
+    mutate(
+      # Create new individual_ID using the first ID in each group
+      individual_ID = original_id[1]
+    ) %>%
+    ungroup() %>%
+    select(original_id, individual_ID)
+  
+  # Create a summary dataframe showing all matches
+  summary_df <- id_mapping %>%
+    group_by(individual_ID) %>%
+    summarize(
+      matched_samples = paste(sort(original_id), collapse = ", "),
+      num_matches = n(),
+      .groups = 'drop'
+    ) %>%
+    arrange(desc(num_matches))
+  
+  # Add the individual_ID to the original matches dataframe
+  matches_with_id <- matches_df %>%
+    left_join(id_mapping, by = c("indiv_1" = "original_id"))
+  
+  # Return both dataframes as a list
+  return(list(
+    matches_with_id = matches_with_id,
+    match_summary = summary_df,
+    id_mapping = id_mapping  # Also return the mapping for reference
+  ))
+}
+
+# Use the function
+matchedIndividuals <- create_individual_matches(matchesHaploSNP_ALL_50)
+
+# View the results
+cat("Sample of matches with new individual_ID:\n")
+print(head(matchedIndividuals$matches_with_id))
+
+cat("\nSummary of matched groups:\n")
+print(head(matchedIndividuals$match_summary))
+
+# Print some summary statistics
+cat("\nSummary statistics:\n")
+cat("Total number of matched groups:", nrow(matchedIndividuals$match_summary), "\n")
+cat("Distribution of group sizes:\n")
+print(table(matchedIndividuals$match_summary$num_matches))
+  
+```
+
+
+```{r}
+# Get the full matches dataframe with new IDs
+matches_with_new_ids <- matchedIndividuals$matches_with_id
+
+# Get the summary of all matched groups
+match_groups <- matchedIndividuals$match_summary
+
+# Look at groups with more than 2 matches
+large_groups <- filter(match_groups, num_matches > 2)
+print(large_groups)
+```
+
+
+```{r}
+library(tidyverse)
+
+# Function to join metadata and add suffixes
+join_pairwise_metadata <- function(pairwise_df, metadata_df) {
+  # First join for indiv_1
+  result <- pairwise_df %>%
+    left_join(
+      metadata_df %>%
+        select(indiv, SampleID, Population, Collection_Location, day, month, year, Genotyped_Loci, GTperc) %>%
+        rename_with(~paste0(., "_1"), -indiv),
+      by = c("indiv_1" = "indiv")  # Join indiv_1 to indiv
+    ) %>%
+    # Then join for indiv_2
+    left_join(
+      metadata_df %>%
+        select(indiv, SampleID, Population, Collection_Location, day, month, year, Genotyped_Loci, GTperc) %>%
+        rename_with(~paste0(., "_2"), -indiv),
+      by = c("indiv_2" = "indiv")  # Join indiv_2 to indiv
+    )
+  
+  # Return the result
+  return(result)
+}
+
+
+```
+
+
+```{r}
+AllpairwiseHaploSNP_md <- join_pairwise_metadata(AllpairwiseHaploSNP, metadata_df)
+```
+
+pull out the ones that have matching SampleID 
+```{r}
+KnownPairs <- AllpairwiseHaploSNP_md %>% filter(SampleID_1 == SampleID_2)
+#WDFW2020-165 - one of them is wrong, Alex needs to correct
+```
+
+pull out the known mom/pup pairs
+```{r}
+library(tidyverse)
+
+# Function to filter mother-fetus pairs
+filter_mother_fetus_pairs <- function(pairwise_df) {
+  pairwise_df %>%
+    # Remove "Mother" and "Fetus" from SampleIDs temporarily to compare base names
+    mutate(
+      base_id_1 = str_remove(SampleID_1, "Mother|Fetus"),
+      base_id_2 = str_remove(SampleID_2, "Mother|Fetus")
+    ) %>%
+    # Filter where base IDs match AND one is Mother and one is Fetus
+    filter(
+      base_id_1 == base_id_2,
+      ((str_detect(SampleID_1, "Mother") & str_detect(SampleID_2, "Fetus")) |
+       (str_detect(SampleID_1, "Fetus") & str_detect(SampleID_2, "Mother")))
+    ) %>%
+    # Remove the temporary columns
+    select(-base_id_1, -base_id_2) %>%
+    # Optional: arrange by SampleID for easier viewing
+    arrange(SampleID_1)
+}
+
+# Usage:
+mother_fetus_pairs <- filter_mother_fetus_pairs(AllpairwiseHaploSNP_md)
+#the appropriate 6 pairs are found
+
+```
+
+presumed resamplings 
+```{r}
+AllpairwiseHaploSNP_md %>% filter(propmatch > 0.75) -> PossibleMatches
+
+PosmatchedIndividuals <- create_individual_matches(PossibleMatches)
+# Get the full matches dataframe with new IDs
+Posmatches_with_new_ids <- PosmatchedIndividuals$matches_with_id
+
+# Get the summary of all matched groups
+Posmatch_groups <- PosmatchedIndividuals$match_summary
+
+#check how many agree with the other match group
+full_join(match_groups,Posmatch_groups, by = "individual_ID") -> MatchCompare1
+
+```
+
+let's plot some of these to see if there are clear clusters
+```{r}
+library(tidyverse)
+
+# Function to add pair status to dataframe
+add_pair_categories <- function(df) {
+  # Get known pairs (matching SampleIDs)
+  known_pairs <- df %>%
+    filter(SampleID_1 == SampleID_2)
+  
+  # Get mother-fetus pairs
+  mother_fetus_pairs <- df %>%
+    mutate(
+      base_id_1 = str_remove(SampleID_1, "Mother|Fetus"),
+      base_id_2 = str_remove(SampleID_2, "Mother|Fetus")
+    ) %>%
+    filter(
+      base_id_1 == base_id_2,
+      ((str_detect(SampleID_1, "Mother") & str_detect(SampleID_2, "Fetus")) |
+       (str_detect(SampleID_1, "Fetus") & str_detect(SampleID_2, "Mother")))
+    )
+  
+  # Add pair status to all data
+  df_with_categories <- df %>%
+    mutate(
+      pair_status = case_when(
+        # Check if row exists in known_pairs
+        paste(SampleID_1, SampleID_2) %in% 
+          paste(known_pairs$SampleID_1, known_pairs$SampleID_2) |
+        paste(SampleID_2, SampleID_1) %in% 
+          paste(known_pairs$SampleID_1, known_pairs$SampleID_2) ~ "Known Replicate",
+        # Check if row exists in mother_fetus_pairs
+        paste(SampleID_1, SampleID_2) %in% 
+          paste(mother_fetus_pairs$SampleID_1, mother_fetus_pairs$SampleID_2) |
+        paste(SampleID_2, SampleID_1) %in% 
+          paste(mother_fetus_pairs$SampleID_1, mother_fetus_pairs$SampleID_2) ~ "Mother-Fetus Pair",
+        TRUE ~ "Unknown"
+      )
+    )
+  
+  return(df_with_categories)
+}
+```
+
+
+```{r}
+# First, add the categories to your dataframe
+AllpairwiseHaploSNP_md_categorized <- add_pair_categories(AllpairwiseHaploSNP_md)
+
+# Check the distribution of categories
+AllpairwiseHaploSNP_md_categorized %>%
+  count(pair_status) %>%
+  arrange(desc(n))
+```
+
+
+```{r}
+non_miss_plot <- AllpairwiseHaploSNP_md_categorized %>% 
+    ggplot(aes(x = num_non_miss, y = propmatch, color = pair_status)) +
+    geom_point(alpha = 0.6) +
+    scale_color_manual(values = c(
+      "Known Replicate" = "#1F77B4",     # Blue
+      "Mother-Fetus Pair" = "#FF7F0E",   # Orange
+      "Unknown" = "grey70"               # Light grey
+    )) +
+    theme_bw() +
+    labs(
+      x = "Number of Non-Missing Sites",
+      y = "Proportion Matching",
+      color = "Pair Status",
+      title = "Pairwise Comparison Results"
+    ) +
+    theme(
+      legend.position = "right",
+      panel.grid.minor = element_blank()
+    )
+# Create basic pairwise plot
+print(non_miss_plot)
+```
+
+```{r}
+num_match_plot <- AllpairwiseHaploSNP_md_categorized %>% 
+    ggplot(aes(x = num_match, y = propmatch, color = pair_status)) +
+    geom_point(alpha = 0.6) +
+    scale_color_manual(values = c(
+      "Known Replicate" = "#1F77B4",     # Blue
+      "Mother-Fetus Pair" = "#FF7F0E",   # Orange
+      "Unknown" = "grey70"               # Light grey
+    )) +
+    theme_bw() +
+    labs(
+      x = "Number of matching genotyped loci",
+      y = "Proportion Matching",
+      color = "Pair Status",
+      title = "Pairwise Comparison Results"
+    ) +
+    theme(
+      legend.position = "right",
+      panel.grid.minor = element_blank()
+    )
+# Create basic pairwise plot
+print(num_match_plot)
+
+```
+
+```{r}
+# Genotyped Loci Plot
+loci_plot <- ggplot(AllpairwiseHaploSNP_md_categorized, 
+                    aes(x = propmatch)) +
+  geom_rect(aes(
+    xmin = propmatch - 0.005,  # small offset for width of box
+    xmax = propmatch + 0.005,
+    ymin = pmin(Genotyped_Loci_1, Genotyped_Loci_2),  # use pmin/pmax to handle cases where 1 > 2 or vice versa
+    ymax = pmax(Genotyped_Loci_1, Genotyped_Loci_2),
+    fill = pair_status
+  ), alpha = 0.6) +
+  scale_fill_manual(values = c(
+    "Known Replicate" = "#1F77B4",     # Blue
+    "Mother-Fetus Pair" = "#FF7F0E",   # Orange
+    "Unknown" = "grey70"               # Light grey
+  )) +
+  theme_bw() +
+  labs(
+    x = "Proportion Matching",
+    y = "Number of Genotyped Loci",
+    fill = "Pair Status",
+    title = "Range of Genotyped Loci by Matching Proportion"
+  ) +
+  theme(
+    legend.position = "right",
+    panel.grid.minor = element_blank()
+  )
+
+# GT Percentage Plot
+gt_plot <- ggplot(AllpairwiseHaploSNP_md_categorized, 
+                  aes(x = propmatch)) +
+  geom_rect(aes(
+    xmin = propmatch - 0.005,  # small offset for width of box
+    xmax = propmatch + 0.005,
+    ymin = pmin(GTperc_1, GTperc_2),
+    ymax = pmax(GTperc_1, GTperc_2),
+    fill = pair_status
+  ), alpha = 0.6) +
+  scale_fill_manual(values = c(
+    "Known Replicate" = "#1F77B4",     # Blue
+    "Mother-Fetus Pair" = "#FF7F0E",   # Orange
+    "Unknown" = "grey70"               # Light grey
+  )) +
+  theme_bw() +
+  labs(
+    x = "Proportion Matching",
+    y = "Genotyping Percentage",
+    fill = "Pair Status",
+    title = "Range of Genotyping Percentage by Matching Proportion"
+  ) +
+  theme(
+    legend.position = "right",
+    panel.grid.minor = element_blank()
+  )
+
+# View plots individually
+print(loci_plot)
+
+
+# If you want to combine them (requires patchwork)
+# library(patchwork)
+# combined_plot <- loci_plot + gt_plot
+# print(combined_plot)
+```
+
+```{r}
+print(gt_plot)
+```
+Need to move the rubias data that we have cleaned up into the related package and run the relatedness simulations to find highly related individuals aka resampled individuals
+
+
+So we can take the genepop data for all the loci that aren't the sex markers and prep it for the relatedness analysis to find pairs
+```{r}
+# remove the loci with no genotyped samples
+genePopHap_Sep %>% 
+  select(SampleID, 
+         where(~ !all(. == "0000"))) -> genePopHap_Sep
+
+genePopHap_Nov1 %>% 
+  select(SampleID, 
+         where(~ !all(. == "0000"))) -> genePopHap_Nov
+
+
+# Function to split genotypes into allele pairs while preserving "00"
+split_genotypes <- function(df) {
+  # Get the sample ID column
+  result <- data.frame(SampleID = df$SampleID)
+  
+  # Process each locus column (all columns except SampleID)
+  for(col in names(df)[-1]) {
+    # Extract the two alleles from the four-digit genotype
+    alleles <- df[[col]]
+    
+    # Split each four-digit genotype into two two-digit numbers
+    a_allele <- substr(alleles, 1, 2)
+    b_allele <- substr(alleles, 3, 4)
+    
+    # Add the new columns to the result dataframe
+    result[[paste0(col, ".a")]] <- a_allele
+    result[[paste0(col, ".b")]] <- b_allele
+  }
+  
+  return(result)
+}
+
+```
+
+Now time to modify and set up the data to run in demerelate or related, let's only keep loci that are in both
+```{r}
+# Get genetic marker names from both datasets
+sep_markers <- names(genePopHap_Sep)[2:ncol(genePopHap_Sep)]
+nov_markers <- names(genePopHap_Nov)[2:ncol(genePopHap_Nov)]
+
+# Find common markers
+common_markers <- intersect(sep_markers, nov_markers)
+# Subset to common columns
+cols_to_keep <- c(names(genePopHap_Nov)[1], common_markers)
+genePopHap_Nov <- genePopHap_Nov[, cols_to_keep]
+genePopHap_Sep <- genePopHap_Sep[, cols_to_keep]
+
+# First identify duplicated SampleIDs
+duplicated_samples <- intersect(genePopHap_Nov$SampleID, genePopHap_Sep$SampleID)
+
+# Modify the November dataset to add _2 to duplicated samples
+genePopHap_Nov_modified <- genePopHap_Nov %>%
+  mutate(SampleID = if_else(SampleID %in% duplicated_samples,
+                           paste0(SampleID, "_2"),
+                           SampleID))
+
+# Now combine the datasets
+combined_genePop <- bind_rows(genePopHap_Sep, genePopHap_Nov_modified)
+
+relateAllData <- split_genotypes(combined_genePop)
+
+#need to assign population so let's get the metadata joined 
+left_join(metadata_df, relateAllData, by = c("indiv"= "SampleID")) -> relateAllData_md
+
+relateAllData_md %>% 
+  mutate(Pop2 = case_when(str_detect(sample_type, "negcontrol") ~ "NTC",
+                          str_detect(sample_type, "blank") ~ "NTC",
+                          str_detect(sample_type, "unknown") ~ "NTC",
+                          str_detect(sample_type, "feces|reference|qualitycontrol|eDNA") ~ "Pvit")) %>% 
+  relocate(Pop2, .after = Population) %>% 
+  select(!c(year,month,day,Collection_Location,sample_type, GTperc,Genotyped_Loci,Run)) -> relateAllData_md_md2
+  
+
+
+relateAllData_md_md2 %>% filter(Pop2 != "NTC") %>% 
+  select(!c(SampleID,Population)) %>% 
+  relocate(indiv, .before = Pop2) %>%   
+  dplyr::rename("Population"= "Pop2")-> relateAllData_pop
+
+relateAllData_md_md2 %>% 
+  select(!c(SampleID,Population)) %>% rename("Population"="Pop2") %>% 
+  relocate(indiv, .before = Population) -> relateAllData_pop
+relateAllData_md_md2 %>% select(!c(SampleID,Pop2)) %>% relocate(indiv, .before = Population) -> relateAllData_pop2
+
+```
+
+Now we can run the Demerelate package torun some stats, first allele frequency stats
+```{r}
+library(Demerelate)
+
+# Step 1: Calculate basic population statistics including allele frequencies
+Pop2_fis_results <- Fis(
+  tab.pop = relateHapPop2,  # Your full dataset
+  allele.column = 3         # Start with first locus (adjust column number as needed)
+)
+
+# View the results for one loci
+print(Pop2_fis_results)
+
+# Function to process all loci and combine stats into a dataframe
+calculate_all_fis <- function(data) {
+  # Get number of loci (pairs of columns after the first two columns)
+  n_loci <- (ncol(data) - 2) / 2
+  
+  # Create empty vectors to store results
+  locus_names <- colnames(data)[seq(3, ncol(data), 2)]  # Get names of .a columns
+  locus_names <- gsub(".a$", "", locus_names)  # Remove .a suffix
+  
+  # Create vectors for each statistic
+  homozygosity <- numeric(n_loci)
+  pop_size <- numeric(n_loci)
+  fis_nei <- numeric(n_loci)
+  fis_weir <- numeric(n_loci)
+  n_alleles <- numeric(n_loci)
+  
+  # Loop through each locus
+  for(i in 1:n_loci) {
+    # Calculate column index
+    col_index <- 2 * i + 1  # Starting from column 3
+    
+    # Run Fis calculation
+    fis_result <- Fis(tab.pop = data, allele.column = col_index)
+    
+    # Store results
+    homozygosity[i] <- fis_result$Homozygosity
+    pop_size[i] <- fis_result$Population_size
+    fis_nei[i] <- fis_result$Fis_Nei
+    fis_weir[i] <- fis_result$Fis_Weir$`Weighted mean of allele Fis`
+    n_alleles[i] <- length(fis_result$Frequency_of_Alleles)
+  }
+  
+  # Create results dataframe
+  results_df <- data.frame(
+    Locus = locus_names,
+    Homozygosity = homozygosity,
+    Population_Size = pop_size,
+    Fis_Nei = fis_nei,
+    Fis_Weir = fis_weir,
+    Number_of_Alleles = n_alleles
+  )
+  
+  return(results_df)
+}
+
+# Use the function
+Pop2_fis_summary <- calculate_all_fis(relateHapPop2)
+
+# View results
+print(Pop2_fis_summary)
+
+# Optionally save to CSV
+write.csv(Pop2_fis_summary, "Pop2_fis_statistics_by_locus.csv", row.names = FALSE)
+
+
+
+
+```
+
+
+Okay now that we have allele frequency tables created for the loci, let's calc all the relatedness stats we can for both the entire Seal pop1 and the stock pop2 dataframes. But first we do need to remove samples that are problematic aka the NTCs and the samples that have <50% of loci genotyped
+```{r}
+All_samples_50_clean %>% select(indiv) -> GenoTyped50Indiv
+
+left_join(GenoTyped50Indiv,relateAllData_pop, by ="indiv") -> relateHapPop1_clean
+left_join(GenoTyped50Indiv,relateAllData_pop2, by = "indiv") -> relateHapPop2_clean
+```
+
+
+
+```{r}
+# Try with just the first two samples
+test_data <- relateHapPop1_clean[1:2,]
+print(test_data)
+
+# Look at available relatedness estimators in Demerelate
+?ritland  # or another estimator like wang, lxy, etc.
+```
+
+```{r}
+# Function to reformat genotype data for Demerelate
+reformat_for_demerelate <- function(data) {
+  # Create new dataframe with individual and population columns
+  reformatted <- data.frame(
+    Individual = data$indiv,
+    population = data$Population
+  )
+  
+  # Get genetic data columns (excluding indiv and Population)
+  geno_cols <- names(data)[-(1:2)]
+  
+  # Process each pair of columns
+  for(i in seq(1, length(geno_cols), by=2)) {
+    # Get base name of locus (remove .a/.b)
+    locus_name <- gsub("\\.a$", "", geno_cols[i])
+    
+    # Convert alleles to numeric, removing leading zeros
+    alleles_a <- as.numeric(data[[geno_cols[i]]])
+    alleles_b <- as.numeric(data[[geno_cols[i+1]]])
+    
+    # Replace 0 (from "00") with NA
+    alleles_a[alleles_a == 0] <- NA
+    alleles_b[alleles_b == 0] <- NA
+    
+    # Add to reformatted dataframe with simple column names
+    # Using format similar to example data: X10.alleles, X10.alleles.1
+    reformatted[[paste0("X", i, ".alleles")]] <- alleles_a
+    reformatted[[paste0("X", i, ".alleles.1")]] <- alleles_b
+  }
+  
+  return(reformatted)
+}
+
+# Try reformatting again
+Pop1_reformatted_new <- reformat_for_demerelate(relateHapPop1_clean)
+
+# Check the new format
+cat("New format check:\n")
+names(Pop1_reformatted_new)[1:6]  # Look at first few column names
+
+```
+
+This chunk creates a pm object for demerelate
+```{r}
+# Modified function to handle single-allele cases
+create_pm_object_fixed <- function(data) {
+  n_loci <- (ncol(data) - 2) / 2
+  pm_list <- list()
+  
+  for(i in 1:n_loci) {
+    col_index <- 2*i + 1
+    fis_result <- Fis(data, allele.column = col_index)
+    
+    # Check if we have only one allele
+    if(length(fis_result$Frequency_of_Alleles) == 1) {
+      # Add a very small frequency for another allele to avoid probability issues
+      alleles <- fis_result$Frequency_of_Alleles
+      new_alleles <- c(alleles = 0.999, other = 0.001)
+      names(new_alleles) <- c(names(alleles), paste0("alt", names(alleles)))
+      pm_list[[i]] <- new_alleles
+    } else {
+      pm_list[[i]] <- fis_result$Frequency_of_Alleles
+    }
+  }
+  
+  # Add sample sizes
+  sample_sizes <- rep(nrow(data), n_loci)
+  pm_list[[n_loci + 1]] <- sample_sizes
+  
+  return(pm_list)
+}
+
+# Modified test function
+test_relate_calc_fixed <- function(data) {
+  # Calculate total number of individuals
+  n_inds <- nrow(data)
+  cat("Number of individuals:", n_inds, "\n")
+  
+  # Create pm object with fix for single-allele loci
+  cat("\nCreating pm object...\n")
+  pm_obj <- create_pm_object_fixed(data)
+  
+  # Try with a small number of pairs first
+  cat("\nTrying relate.calc...\n")
+  rel_calc <- relate.calc(
+    tab.pop = data,
+    pairs = 100,
+    value = "ritland",
+    file.output = FALSE,
+    directory.name = "GTSeq_September2024",
+    pm = pm_obj
+  )
+  
+  return(rel_calc)
+}
+
+# Test with the fixed function
+pop2_results <- test_relate_calc_fixed(Pop2_reformatted_new)
+print(pop2_results)
+```
+
+Okay so these are our relatedness thresholds Huzzah!
+Full-siblings = 0.3710509
+
+Run the function Pop2 is just Pvit for everything that isn't an NTC to how related samples from different stocks are
+```{r}
+library(tidyverse)
+# Create dataframe of your known pairs
+KnownPairs %>% select(indiv_1,indiv_2) %>% 
+  mutate(Relationship = "same_individual") %>% 
+  dplyr::rename("Individual1" = "indiv_1") %>% 
+  dplyr::rename("Individual2" = "indiv_2") -> KnownPairs_relate  
+
+mother_fetus_pairs  %>% select(indiv_1,indiv_2) %>% 
+  mutate(Relationship = "mother_pup") %>% 
+  dplyr::rename("Individual1" = "indiv_1") %>% 
+  dplyr::rename("Individual2" = "indiv_2") -> mompup_relate
+
+known_pairs <- rbind(KnownPairs_relate,mompup_relate)
+
+```
+
+calc thresholds with demerelate
+```{r}
+# Modified threshold calculation function with more debugging
+calculate_thresholds <- function(data, known_pairs_df) {
+  # First split the known pairs into proper format
+  cat("Step 1: Preparing known pairs...\n")
+  known_pairs <- prepare_known_pairs(known_pairs_df)
+  cat("Number of same individual pairs:", nrow(known_pairs$same_individual), "\n")
+  if(!is.null(known_pairs$mother_offspring)) {
+    cat("Number of mother-offspring pairs:", nrow(known_pairs$mother_offspring), "\n")
+  }
+  
+  # Calculate number of pairs to use
+  n_samples <- nrow(data)
+  n_pairs <- min(100, n_samples)
+  cat("\nStep 2: Setting up parameters...\n")
+  cat("Number of samples:", n_samples, "\n")
+  cat("Using", n_pairs, "pairs for reference populations\n")
+  
+  # Create pm object
+  cat("\nStep 3: Creating pm object...\n")
+  pm_obj <- create_pm_object_fixed(data)
+  cat("PM object created with", length(pm_obj)-1, "loci\n")
+  
+  # Get relatedness calculations
+  cat("\nStep 4: Running relate.calc...\n")
+  rel_results <- relate.calc(
+    tab.pop = data,
+    pairs = n_pairs,
+    value = "ritland",
+    file.output = "relate_output.txt",
+    directory.name = "GTSeq_September2024",
+    pm = pm_obj
+  )
+  
+  cat("\nStep 5: Examining relate.calc output...\n")
+  cat("Names of output elements:\n")
+  print(names(rel_results))
+  
+  cat("\nStructure of first element (relatedness):\n")
+  print(str(rel_results[[1]]))
+  
+  # Try to understand what we got for relatedness
+  rel_matrix <- rel_results[[1]]
+  cat("\nClass of relatedness result:", class(rel_matrix), "\n")
+  cat("Length of relatedness result:", length(rel_matrix), "\n")
+  if(is.matrix(rel_matrix)) {
+    cat("Dimensions of relatedness matrix:", dim(rel_matrix), "\n")
+  }
+  
+  # Look at the thresholds that were calculated
+  cat("\nStep 6: Examining calculated thresholds...\n")
+  print(rel_results$Thresholds)
+  
+  # Return what we have so far
+  return(list(
+    raw_results = rel_results,
+    relatedness = rel_matrix,
+    pm_object = pm_obj
+  ))
+}
+
+# Try running with the debugging output
+cat("Starting analysis...\n")
+thresh_results <- calculate_thresholds(Pop2_reformatted_new, known_pairs)
+
+# Check results
+if(!is.null(thresh_results)) {
+  cat("\nCalculated thresholds:\n")
+  print(thresh_results$thresholds)
+}
+```
+
+
+Okay so we have silblings/parent-offspring thresholds, we need to look at all the pairwise tests to see if the actual parent_offspring pairs pass that threshold and what an individual ID threshold would be.
+This chunk is an old function for pairwise comparison
+```{r}
+# Simplified function to process relatedness results
+process_relatedness_results <- function(data, raw_results, known_pairs) {
+  # Get thresholds from relate.calc results
+  thresholds <- list(
+    full_sib = raw_results$Thresholds["full", 1],
+    half_sib = raw_results$Thresholds["half", 1]
+  )
+  
+  # Create all pairwise combinations
+  pairs <- expand.grid(
+    Individual1 = data$Individual,
+    Individual2 = data$Individual,
+    stringsAsFactors = FALSE
+  )
+  
+  # Create results dataframe
+  results_df <- data.frame(
+    Individual1 = pairs$Individual1,
+    Individual2 = pairs$Individual2,
+    Population1 = data$population[match(pairs$Individual1, data$Individual)],
+    Population2 = data$population[match(pairs$Individual2, data$Individual)],
+    Relatedness = NA,
+    stringsAsFactors = FALSE
+  )
+  
+  # Calculate relatedness for each pair
+  cat("Calculating pairwise relatedness...\n")
+  for(i in 1:nrow(results_df)) {
+    # Get indices for the pair
+    ind1_idx <- which(data$Individual == results_df$Individual1[i])
+    ind2_idx <- which(data$Individual == results_df$Individual2[i])
+    
+    if(ind1_idx == ind2_idx) {
+      # Self comparison
+      results_df$Relatedness[i] <- 1.0
+    } else {
+      # Get genetic data for both individuals (all allele columns)
+      geno1 <- as.numeric(unlist(data[ind1_idx, grep("alleles", names(data))]))
+      geno2 <- as.numeric(unlist(data[ind2_idx, grep("alleles", names(data))]))
+      
+      # Calculate proportion of shared alleles
+      n_shared <- sum(geno1 == geno2, na.rm = TRUE)
+      n_total <- sum(!is.na(geno1) & !is.na(geno2))
+      
+      if(n_total > 0) {
+        results_df$Relatedness[i] <- n_shared / n_total
+      }
+    }
+  }
+  
+  # Add relationship types based on known pairs
+  results_df$Known_Relationship <- "Unknown"
+  
+  # Mark known same individuals
+  same_ind <- known_pairs[known_pairs$Relationship == "same_individual",]
+  for(i in 1:nrow(same_ind)) {
+    mask <- (results_df$Individual1 == same_ind$Individual1[i] & 
+             results_df$Individual2 == same_ind$Individual2[i]) |
+           (results_df$Individual1 == same_ind$Individual2[i] & 
+             results_df$Individual2 == same_ind$Individual1[i])
+    results_df$Known_Relationship[mask] <- "same_individual"
+  }
+  
+  # Mark known mother-pup pairs
+  mom_pup <- known_pairs[known_pairs$Relationship == "mother_pup",]
+  for(i in 1:nrow(mom_pup)) {
+    mask <- (results_df$Individual1 == mom_pup$Individual1[i] & 
+             results_df$Individual2 == mom_pup$Individual2[i]) |
+           (results_df$Individual1 == mom_pup$Individual2[i] & 
+             results_df$Individual2 == mom_pup$Individual1[i])
+    results_df$Known_Relationship[mask] <- "mother_pup"
+  }
+  
+  # Calculate parent-offspring threshold from known mother-pup pairs
+  mom_pup_rels <- results_df$Relatedness[results_df$Known_Relationship == "mother_pup"]
+  if(length(mom_pup_rels) > 0) {
+    thresholds$parent_offspring <- mean(mom_pup_rels) - 2*sd(mom_pup_rels)
+  }
+  
+  return(list(
+    pairwise_results = results_df,
+    thresholds = thresholds,
+    randomization_results = list(
+      fullsib = raw_results$Randomized_Fullssibs,
+      halfsib = raw_results$Randomized_Halfsibs,
+      unrelated = raw_results$Randomized_Non
+    )
+  ))
+}
+
+# Try the simplified version
+results <- process_relatedness_results(Pop2_reformatted_new, thresh_results$raw_results, known_pairs)
+
+# Look at summary stats
+cat("\nSummary of relatedness values:\n")
+summary(results$pairwise_results$Relatedness)
+
+cat("\nRelatedness by known relationship:\n")
+by(results$pairwise_results$Relatedness, 
+   results$pairwise_results$Known_Relationship, 
+   summary)
+
+cat("\nCalculated thresholds:\n")
+print(results$thresholds)
+```
+
+this is an old chunk that ran that function
+```{r}
+pairwise_relatedness <- results$pairwise_results
+
+pairwise_relatedness %>% filter(Individual1 != Individual2) -> pairwise_relatedness
+
+#let's look at the Mom_pup pairs only
+pairwise_relatedness %>% filter(Known_Relationship == "mother_pup") -> M_p_relatedness
+# now the known individuals
+```
+So those pairwise comparisons are very basic and not actual relatedness calculations
+
+
+This is actually calculating relatedness, so this brings the data in to the related package to run
+```{r}
+library(related)
+
+prep_data <- Pop1_reformatted_new %>%  mutate_if(is.numeric, ~replace_na(., 0)) %>% 
+  select(!population)
+
+names(prep_data) <- NULL
+
+related_data <- readgenotypedata(prep_data)
+
+```
+
+these take a long time, so I suggest doing this once, then we can bring in all the results we want to 
+```{r}
+related_results <- coancestry(related_data$gdata, trioml = 1)
+write.csv(related_results$relatedness, "Relatedness_trioml_ALL_output.csv")
+
+related_results_2 <- coancestry(related_data$gdata, ritland = 2)
+
+write.csv(related_results_2$relatedness, "Relatedness_2_ritland_output.csv")
+
+related_results_3 <- coancestry(related_data$gdata, dyadml = 2)
+write.csv(related_results_3$relatedness, "Relatedness_2_dyadml_output.csv")
+
+#the trioml and dyadml are maximum likelihood based models and make the most sense, output wise, and the agree within 0.005 for results, so use one of those
+
+```
+now let's simulate related individuals and run the relatedness on those, to find thresholds of expected relatedness based off allele frequency
+```{r}
+simulated_data <- familysim(related_data$freqs, ninds = 50)
+
+simu_relate_results_1 <- coancestry(simulated_data, trioml = 1)
+sim_1_rel <- simu_relate_results_1$relatedness
+sim_1_CI <- simu_relate_results_1$relatedness.ci95
+write.csv(simu_relate_results_1$relatedness, "Simulation_all_trioml_output.csv")
+write.csv(simu_relate_results_1$relatedness.ci95, "Simulation_1_trioml_CI_output.csv")
+simu_relate_results_2 <- coancestry(simulated_data, dyadml = 1)
+sim_2_rel <- simu_relate_results_1$relatedness
+write.csv(simu_relate_results_2$relatedness, "Simulation_2_dyadml_output.csv")
+
+#let's see what Unrelated samples have for relatedness values
+sim_1_rel %>%  filter(str_detect(group, "UR")) -> Sim_unrelated
+
+```
+
+anything higher that 76.63% related is more similar than either full sibling or parent/offspring, so should be considered the same individual, so I think it is safe to say anything with a relatedness value >80% is soundly the same individual, and really those that are about 77% likely are. The highest relatedness value when either individual is an unrelated animal is 48.6% so safely we can say anything above 50% is related or the same individual and anything above 80% is the same individual.
+
+
+Let's pull out the pairs that have high relatability
+```{r}
+All_pairs_relatedness <- related_results$relatedness
+
+All_pairs_relatedness %>% 
+  select(pair.no,ind1.id,ind2.id,group,trioml) -> All_pairs_relatedness
+All_pairs_relatedness %>% 
+  mutate(relationship = case_when(trioml <= 0.5 ~ "unrelated",
+                                  trioml > 0.5 & trioml < 0.8 ~ "PO_sibling",
+                                  trioml >= 0.8 ~ "same_individual")) -> All_pairs_relatedness
+
+All_pairs_relatedness %>% 
+  filter(relationship == "same_individual") -> Same_individuals
+
+All_pairs_relatedness %>% 
+   filter(relationship == "PO_sibling") -> Related_individuals
+
+```
+
+Okay I want to see what the pairwise comparison from earlier matches the same individuals found through the relatedness
+```{r}
+Relatedness_pairwise_all <- All_pairs_relatedness %>%
+  left_join(AllpairwiseHaploSNP_md, 
+            by = c("ind1.id" = "indiv_1",
+                  "ind2.id" = "indiv_2"))
+
+#pull out the same_individuals to see the prop_match 
+Relatedness_pairwise_all %>% 
+  filter(relationship == "same_individual") -> Same_individuals_relate_PW
+
+Same_individuals_relate_PW %>% filter(!is.na(propmatch)) %>% 
+  filter(SampleID_1 != SampleID_2) -> Same_individuals_relate_PW
+
+
+```
+
+```{r}
+library(igraph)
+library(tidyverse)
+
+create_individual_matches_modified <- function(matches_df) {
+  # Create an edge list from both ind1.id to ind2.id relationships
+  edges <- rbind(
+    select(matches_df, from = ind1.id, to = ind2.id),
+    select(matches_df, from = ind2.id, to = ind1.id)  # Add reverse relationships
+  ) %>% distinct()  # Remove duplicates
+  
+  # Create a graph from the edge list
+  g <- graph_from_data_frame(edges, directed = FALSE)
+  
+  # Find all connected components (groups of matched samples)
+  components <- components(g)
+  
+  # Create a mapping of original IDs to new individual_ID
+  id_mapping <- data.frame(
+    original_id = names(components$membership),
+    group = components$membership
+  ) %>%
+    arrange(group) %>%
+    group_by(group) %>%
+    mutate(
+      # Create new individual_ID using the first ID in each group
+      individual_ID = original_id[1]
+    ) %>%
+    ungroup() %>%
+    select(original_id, individual_ID)
+  
+  # Create an enhanced summary dataframe
+  summary_df <- matches_df %>%
+    # Get unique sample information for each ID
+    bind_rows(
+      select(., id = ind1.id, SampleID = SampleID_1, 
+             Population = Population_1, Location = Collection_Location_1,
+             collection = collection_1, sample_type = sample_type_1,
+             day = day_1, month = month_1, year = year_1,
+             Genotyped_Loci = Genotyped_Loci_1, GTperc = GTperc_1),
+      select(., id = ind2.id, SampleID = SampleID_2, 
+             Population = Population_2, Location = Collection_Location_2,
+             collection = collection_2, sample_type = sample_type_2,
+             day = day_2, month = month_2, year = year_2,
+             Genotyped_Loci = Genotyped_Loci_2, GTperc = GTperc_2)
+    ) %>%
+    distinct() %>%
+    # Join with id_mapping
+    inner_join(id_mapping, by = c("id" = "original_id")) %>%
+    # Create date string after the bind_rows
+    mutate(date = paste(day, month, year)) %>%
+    # Create summary by individual_ID
+    group_by(individual_ID) %>%
+    summarize(
+      matched_samples = paste(sort(id), collapse = ", "),
+      sample_ids = paste(sort(unique(SampleID)), collapse = ", "),
+      populations = paste(sort(unique(Population)), collapse = ", "),
+      locations = paste(sort(unique(Location)), collapse = ", "),
+      collections = paste(sort(unique(collection)), collapse = ", "),
+      sample_types = paste(sort(unique(sample_type)), collapse = ", "),
+      dates = paste(sort(unique(date)), collapse = ", "),
+      num_matches = n(),
+      avg_genotyped_loci = mean(Genotyped_Loci, na.rm = TRUE),
+      avg_GT_perc = mean(GTperc, na.rm = TRUE),
+      .groups = 'drop'
+    ) %>%
+    arrange(desc(num_matches))
+  
+  # Add the individual_ID to the original matches dataframe
+  matches_with_id <- matches_df %>%
+    left_join(id_mapping, by = c("ind1.id" = "original_id")) %>%
+    rename(individual_ID_1 = individual_ID) %>%
+    left_join(id_mapping, by = c("ind2.id" = "original_id")) %>%
+    rename(individual_ID_2 = individual_ID)
+  
+  # Return both dataframes as a list
+  return(list(
+    matches_with_id = matches_with_id,
+    match_summary = summary_df,
+    id_mapping = id_mapping
+  ))
+}
+
+# Function to print summary statistics
+print_match_summary <- function(matched_results) {
+  cat("\nSummary statistics:\n")
+  cat("Total number of matched groups:", nrow(matched_results$match_summary), "\n")
+  cat("\nDistribution of group sizes:\n")
+  print(table(matched_results$match_summary$num_matches))
+  
+  cat("\nSummary by collection:\n")
+  collection_summary <- matched_results$match_summary %>%
+    separate_rows(collections, sep = ", ") %>%
+    count(collections) %>%
+    arrange(desc(n))
+  print(collection_summary)
+  
+  cat("\nSummary by sample type:\n")
+  type_summary <- matched_results$match_summary %>%
+    separate_rows(sample_types, sep = ", ") %>%
+    count(sample_types) %>%
+    arrange(desc(n))
+  print(type_summary)
+}
+
+# Use the function
+matched_results_Relate_PW <- create_individual_matches_modified(Same_individuals_relate_PW)
+
+# View the results
+cat("Sample of matches with new individual_ID:\n")
+print(head(matched_results_Relate_PW$matches_with_id))
+
+cat("\nSummary of matched groups:\n")
+print(head(matched_results_Relate_PW$match_summary))
+
+# Print the detailed summary statistics
+print_match_summary(matched_results_Relate_PW)
+```
+
+```{r}
+# Get the full matches dataframe with new IDs
+matches_with_new_ids <- matched_results_Relate_PW$matches_with_id
+
+# Get the summary of all matched groups
+match_groups <- matched_results_Relate_PW$match_summary
+
+# Look at groups with more than 2 matches
+large_groups <- filter(match_groups, num_matches > 2)
+print(large_groups)
+```
+
+The matched groups shows 
+
+how many were sex ID'd 
+Sex marker genotyping and reads
+```{r}
+# First store the original column names (sample IDs)
+sample_ids <- colnames(SexLociSep)[-1]  # Exclude the LocusID column
+
+# Do the same for November data, adding _2 to duplicates
+sample_ids_nov <- colnames(SexLociNov)[-1]  # Exclude the LocusID column
+
+# Process September data first
+SexLociSep_processed <- SexLociSep %>%
+    t() %>%
+    as.data.frame() %>%
+    setNames(.[1,]) %>%
+    .[-1,] %>%
+    rownames_to_column("SampleID") %>%
+    mutate(across(-SampleID, 
+                 ~as.numeric(str_extract(., "(?<=,)\\d+"))))
+
+# For November data, handle both types of duplicates
+SexLociNov_processed <- SexLociNov %>%
+    t() %>%
+    as.data.frame() %>%
+    setNames(.[1,]) %>%
+    .[-1,] %>%
+    rownames_to_column("SampleID") %>%
+    # First add _2 to samples that duplicate September samples
+    mutate(SampleID = if_else(SampleID %in% SexLociSep_processed$SampleID,
+                             paste0(SampleID, "_2"),
+                             SampleID)) %>%
+    # Then handle duplicates within November dataset
+    group_by(SampleID) %>%
+    mutate(SampleID = if_else(n() > 1, 
+                             paste0(SampleID, "_", row_number()), 
+                             SampleID)) %>%
+    ungroup() %>%
+    mutate(across(-SampleID, 
+                 ~as.numeric(str_extract(., "(?<=,)\\d+"))))
+
+# Combine the datasets
+SexLoci_combined <- bind_rows(SexLociSep_processed, SexLociNov_processed)
+
+#now the genotypes
+haplotype_rubias_md_Sep %>% select(indiv,SRY,ZFX,ZFY) -> SexGenotypeSep
+haplotype_rubias_Nov2  %>% select(indiv,SRY,ZFX,ZFY)  -> SexGenotypeNov
+
+# First identify duplicates between Sep and Nov
+duplicated_samples <- intersect(SexGenotypeNov$indiv, SexGenotypeSep$indiv)
+
+# Modify November dataset to add _2 to duplicates and change TRUE to "T"
+SexGenotypeNov_modified <- SexGenotypeNov %>%
+  mutate(indiv = if_else(indiv %in% duplicated_samples,
+                        paste0(indiv, "_2"),
+                        indiv),
+         SRY = if_else(SRY == TRUE, "T", as.character(SRY)))
+
+# Modify September dataset to change TRUE to "T"
+SexGenotypeSep_modified <- SexGenotypeSep %>%
+  mutate(SRY = if_else(SRY == TRUE, "T", as.character(SRY)))
+
+# Combine if needed
+SexGenotype_combined <- bind_rows(SexGenotypeSep_modified, SexGenotypeNov_modified)
+
+SexGenotype_combined %>% rename(c("SRY_gt" = "SRY", "ZFX_gt"="ZFX", "ZFY_gt"="ZFY")) -> SexGenotype_combined
+
+left_join(SexGenotype_combined,SexLoci_combined, by = c("indiv"="SampleID")) -> SexMarkersAll
+
+SexMarkersAll %>% 
+  mutate(Sex_gt = case_when(
+    SRY_gt == "T" ~ "Male",
+    ZFY_gt == "A" ~ "Male",
+    ZFX_gt == "G" & is.na(SRY_gt) ~ "Female",
+    )) %>% 
+  mutate(Sex_reads = case_when(
+    SRY > 1 & SRY_gt == "T" ~ "Male",
+    SRY > 1 & is.na(SRY_gt) ~ "Maybe_Male",
+    ZFY > 1 & ZFY_gt == "A" ~ "Male",
+    ZFY > 1 & is.na(ZFY_gt) ~ "Maybe_Male",
+    ZFX > 1 & SRY < 2 & ZFX_gt == "G" ~ "Female",
+    ZFX > 1 & SRY == 0 & ZFX_gt != "G" ~ "MaybeFemale",
+    )) -> SexMarkersAll
+
+left_join(metadata_df, SexMarkersAll, by = "indiv") -> SexMarkersAll_md
+
+#pull out known sex 
+metadata_Sep %>% select(indiv,Known_Sex,Estimated_AgeClass) -> metadataSep_sex
+
+left_join(SexMarkersAll_md, metadataSep_sex, by = "indiv") -> SexMarkersAll_md
+
+write.csv(SexMarkersAll_md, "Sex_markers_AllSamples_with_metadata.csv", row.names = F)
+
+SexMarkersAll_md %>% 
+  mutate(propZXZY = ZFX/ZFY) %>% 
+  mutate(propXSY = ZFX/SRY) %>% 
+  mutate(S)
+```
+
+
+
