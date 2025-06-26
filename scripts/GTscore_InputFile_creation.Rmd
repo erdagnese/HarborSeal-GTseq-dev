@@ -1,0 +1,240 @@
+---
+title: "Untitled"
+author: "Erin D'Agnese"
+date: "2024-10-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(here)
+```
+These are the original ones Erin made for the 111 first set
+```{r}
+B1 <- read.csv(here("Seal_ID_SNP_panel_test","SNPbatch1_BP3.csv"), header = T)
+B2 <- read.csv(here("Seal_ID_SNP_panel_test","SNPbatch2_BP3.csv"), header = T)
+B3 <- read.csv(here("Seal_ID_SNP_panel_test","SNPbatch3_BP3.csv"), header = T)
+B4 <- read.csv(here("Seal_ID_SNP_panel_test","SNPbatch4_BP3.csv"), header = T)
+B5 <- read.csv(here("Seal_ID_SNP_panel_test","SNPbatch5_BP3.csv"), header = T)
+B6 <- read.csv(here("Seal_ID_SNP_panel_test","SNPbatch6_BP3.csv"), header = T)
+B12 <- read.csv(here("Alex_batches","SNPbatch1_BP3_NathanNew.csv"), header = T)
+B13 <- read.csv(here("Alex_batches","SNPbatch2_BP3_NathanNew.csv"), header = T)
+
+
+probeseq <- read.csv(here("Alex_batches","ProbeSeqUNCORRECTED.csv"), header = F)
+
+#can bring in the set made previously by Erin that have all the original 
+```
+
+These are Alex's that she made for the rounds 4-6 of panel optimization
+```{r}
+B7 <- read.table(here("Alex_batches","PACSNPbatch1.csv"), sep = "\t", header = F)
+B8 <- read.table(here("Alex_batches","PACSNPbatch2.txt"), sep = "\t", header = F)
+B9 <- read.table(here("Alex_batches","PACSNPbatch3.txt"), sep = "\t", header = F)
+B10 <- read.table(here("Alex_batches","PACSNPbatch4.txt"), sep = "\t", header = F)
+B11 <- read.table(here("Alex_batches","PACSNPbatch5.txt"), sep = "\t", header = F)
+#probeseq <- read.csv(here("Alex_batches","ProbeSeqUNCORRECTED.csv"), header = F)
+
+B12 <- read.csv(here("Alex_batches","SNPbatch1_BP3_NathanNew.csv"), header = T)
+B13 <- read.csv(here("Alex_batches","SNPbatch2_BP3_NathanNew.csv"), header = T)
+
+```
+
+
+```{r}
+library(tidyverse)
+library(stringr)
+```
+We want all of the SNPs in one DF
+
+```{r}
+Primers <- rbind(B1,B2,B3,B4,B5,B6,B12,B13)
+# so there are 1984 total SNPs to choose from
+
+#Primers <- rbind(B12,B13)
+
+```
+
+```{r}
+#For Alex's data set
+PrimersPAC <- rbind(B7,B8,B9,B10,B11)
+PrimersPAC %>% dplyr::rename("Seq.ID" = "V2", "Orientation" = "V5", "Start" = "V6", "Len"="V7", "Prod.Size"="V13", "Seq"="V12", "Seq.Length"="V14", "Included.Length"="V15") %>% 
+  select(Seq.ID,Orientation,Start,Len,Seq,Prod.Size,Seq.Length,Included.Length)-> PrimersPAC
+```
+
+
+We need better names for the primers so we know they are harbor seals
+```{r}
+Primers %>%
+  separate(col = Seq.ID, into = c("g","db","PrimerID"), sep = "\\|") %>%
+  select(!(g:db)) -> Primers
+
+Primers$PrimerID <- str_replace(Primers$PrimerID, "rs", "")
+
+PrimersPAC %>%
+  separate(col = Seq.ID, into = c("g","db","PrimerID"), sep = "\\|") %>%
+  select(!(g:db)) -> PrimersPAC
+
+PrimersPAC$PrimerID <- str_replace(PrimersPAC$PrimerID, "rs", "")
+
+```
+
+```{r}
+probeseq %>% dplyr::rename("PrimerID" = "V1", "major" = "V2", "minor" = "V3", "probe1"="V4", "probe2"="V5", "seq"="V6", "cor1"="V7", "cor2"="V8") -> probeseq
+
+left_join(probeseq,Primers, by = "PrimerID") -> PrimerInfo
+#to remove the ones that are from Erin's set
+PrimerInfo %>% filter(!is.na(Orientation)) -> PrimerInfo
+
+PrimerInfo %>% select(!Index) %>% distinct() -> PrimerInfo
+
+PrimerInfo %>% select(PrimerID, major,minor,probe1,probe2,seq,cor1,cor2,Orientation,Start,Len,Prod.Size,Seq.Length,Included.Length) -> PrimerInfo
+
+PrimerInfo %>% group_by(PrimerID) %>% 
+  mutate(RevStartBP = case_when(str_detect(Orientation, pattern = "REVERSE") ~ Start)) %>% 
+  mutate(RevLen = case_when(str_detect(Orientation, pattern = "REVERSE") ~ Len)) %>% 
+  mutate(ForStartBP = case_when(str_detect(Orientation, pattern = "FORWARD") ~ Start)) %>% 
+  mutate(ForLen = case_when(str_detect(Orientation, pattern = "FORWARD") ~ Len)) %>% 
+  select(!c(Start,Len, Orientation)) %>% 
+  summarise(across(everything(), ~coalesce(na.omit(.)[1],NA))) -> PrimerProbeInfo
+
+left_join(probeseq,PrimersPAC, by = "PrimerID") -> PrimerInfoPac
+PrimerInfoPac %>% filter(!is.na(Orientation)) -> PrimerInfoPac
+PrimerInfoPac %>% select(PrimerID, major,minor,probe1,probe2,seq,cor1,cor2,Orientation,Start,Len,Prod.Size,Seq.Length,Included.Length) -> PrimerInfoPac
+
+PrimerInfoPac %>% group_by(PrimerID) %>% 
+  mutate(RevStartBP = case_when(str_detect(Orientation, pattern = "REVERSE") ~ Start)) %>% 
+  mutate(RevLen = case_when(str_detect(Orientation, pattern = "REVERSE") ~ Len)) %>% 
+  mutate(ForStartBP = case_when(str_detect(Orientation, pattern = "FORWARD") ~ Start)) %>% 
+  mutate(ForLen = case_when(str_detect(Orientation, pattern = "FORWARD") ~ Len)) %>% 
+  select(!c(Start,Len, Orientation)) %>% 
+  summarise(across(everything(), ~coalesce(na.omit(.)[1],NA))) -> PrimerProbeInfoPac
+
+
+```
+
+Okay now we gotta do math and check that it works how we intend
+```{r}
+PrimerProbeInfo %>% 
+  mutate(OldPos = 100) %>% 
+  dplyr::rename("OldLen" = "Seq.Length", "NewLen" = "Prod.Size") %>% 
+  mutate(NewPos = (OldPos - ForStartBP) + 1) %>% 
+  mutate(CheckPos_FWD = NewPos - ForLen) -> PrimerProbeInfo 
+#so the position is one off aka when it says 21 it should be 22 this is probably because of the subratction not accounting for the actual BP we are targeting so I've modified it so now it works right
+
+PrimerProbeInfoPac %>% 
+  mutate(OldPos = 100) %>% 
+  dplyr::rename("OldLen" = "Seq.Length", "NewLen" = "Prod.Size") %>% 
+  mutate(NewPos = (OldPos - ForStartBP) + 1) %>% 
+  mutate(CheckPos_FWD = NewPos - ForLen) -> PrimerProbeInfoPac
+
+```
+
+Let's pull out the columns we need for the GTscore input *we still need to account for the ones that have multi SNPs*
+```{r}
+PrimerProbeInfo %>% select(PrimerID,NewPos,major,minor,probe1,probe2,seq) %>% 
+  mutate(Ploidy = 2) -> scoreInput1 # we will add the second rows for the multi SNPs to this
+
+#pull out the ones with brackets
+scoreInput1 %>% 
+  filter(str_detect(probe1, pattern = "\\[|/|\\]")) -> MultiSNPs 
+
+anti_join(scoreInput1,MultiSNPs, by = "PrimerID") -> SingleSNPs
+
+scoreInput1 %>% mutate(Ploidy = 2) %>% 
+  dplyr::rename("Locus" = "PrimerID", "SNPpos" = "NewPos", "Allele1"="major", "Allele2" = "minor", "Probe1" = "probe1", "Probe2"="probe2", "Primer"="seq") %>% 
+  select(Locus, Ploidy,SNPpos,Allele1,Allele2,Probe1,Probe2,Primer) -> scoreInput2
+
+
+PrimerProbeInfoPac %>% select(PrimerID,NewPos,major,minor,probe1,probe2,seq) %>% 
+  mutate(Ploidy = 2) -> scoreInputPac
+
+scoreInputPac %>% mutate(Ploidy = 2) %>% 
+  dplyr::rename("Locus" = "PrimerID", "SNPpos" = "NewPos", "Allele1"="major", "Allele2" = "minor", "Probe1" = "probe1", "Probe2"="probe2", "Primer"="seq") %>% 
+  select(Locus, Ploidy,SNPpos,Allele1,Allele2,Probe1,Probe2,Primer) -> scoreInputPac
+
+```
+
+Need to make additional rows for each of the multiSNPs and modify the position and the bracketed SNPs
+```{r}
+MultiSNPs %>% 
+  mutate(SNPval = "A") %>% # A will be the first SNP in the amplicon
+  mutate(Probe1A = probe1) %>% #make copies so they are retained
+  mutate(Probe2A = probe2) %>% 
+  separate(probe1, 
+           into = c("first7_1A", "SNPAmaj","second7_1A"),
+           sep = c(7,8)) %>% # pull out the portions of the probe
+  mutate(SNPBposition = as.numeric(str_locate(second7_1A, "\\[")[,"start"]), #finds the second SNP position in relation to the first one
+         SNPBmaj = str_extract(second7_1A, "(?<=\\[)[^/]+"), #extracts the second SNP major allele
+         SNPBmin = str_extract(second7_1A, "(?<=/).*?(?=\\])"), #extracts the second SNP minor allele
+         SNPBafter = str_extract(second7_1A, "(?<=\\]).*$"), #Extracts everything after the second SNP
+         SNPBbefore = str_extract(second7_1A, "^.*(?=\\[)") #extracts everything between the first SNP and the second
+         ) %>% #make the new probes for the other SNPs
+  mutate(SNPBpositionTrue = NewPos + SNPBposition) %>% # determines position of the second SNP
+  mutate(SNPAprobe = str_c("[",major, "/", minor,"]")) %>% # creates the bracketed portion of the probe for SNP B
+  mutate(Probe1B = str_c(first7_1A,SNPAprobe,SNPBbefore,SNPBmaj,SNPBafter)) %>% 
+  mutate(Probe2B = str_c(first7_1A,SNPAprobe,SNPBbefore,SNPBmin,SNPBafter)) %>% 
+  select(PrimerID,Ploidy,SNPBpositionTrue,SNPBmaj,SNPBmin,Probe1B,Probe2B,seq) -> MultiSNPs_set2
+
+#let's rename columns so they match
+MultiSNPs_set2 %>% dplyr::rename("Locus" = "PrimerID", "SNPpos" = "SNPBpositionTrue", "Allele1"="SNPBmaj", "Allele2" = "SNPBmin", "Probe1" = "Probe1B", "Probe2"="Probe2B", "Primer"="seq" ) -> MultiSNPs_set2
+
+rbind(scoreInput2,MultiSNPs_set2) -> GTscoreInput
+
+GTscoreInput %>% arrange(Locus,SNPpos) -> GTscoreInput
+
+#write.csv(scoreInputPac, "GTscoreInput_Round3Primerlist_PACsnps.csv", row.names = F)
+inner_join(scoreInputPac, GTscoreInput, by="Locus") -> PACsnpsGTscoreDup # these are identical across the primers so we have 7 duplicates so lets not keep them
+
+anti_join(scoreInputPac, GTscoreInput, by="Locus") -> PACsnpsGTscore
+
+
+rbind(GTscoreInput,PACsnpsGTscore) -> GTscoreInput2 # 223 rows, with 12 multi-snps so there are 211 which is the correct number without having the sex markers 
+write.table(GTscoreInput2, "GTscoreInput_211SNPsRound6.txt", sep = "\t",row.names = F,quote = FALSE)
+
+
+
+```
+
+So all you should have to do, is repeat this with your batchprimer3 outputs, then rbind yours to mine and do a left join with a list of SNPs aka the Probeseq file to get the final input file, except you will have to do the sex markers by hand again, and I dunno what position those are in the amplicon, but that should be easy to figure out from the papers or from previous scripts
+
+Gotta bring the sex markers in and use the accessions to figure out SNPpos
+
+```{r}
+SRY <- data.frame(Locus = "SRY", Ploidy = 1, SNPpos = 50, Allele1 = "T", Allele2 = "T", Probe1 = "CTCCGTGACAGTCCAGAAACCT", Probe2 = "CTCCGTGACAGTCCAGAAACCT", Primer = "CCAACTCGCTGCTGCAACAGGA") 
+#so this doesn't tell you where it is, and you can select really any Allele in the probe since it is a qPCR assay and if you could sort that out for the ZFY ans ZFX that would be great
+
+ZFX <-data.frame(Locus = "ZFX", Ploidy = 1, SNPpos = 34, Allele1 = "G", Allele2 = "G", Probe1 = "CTGGTCTGAAAACTTCATT", Probe2 = "CTGGTCTGAAAACTTCATT", Primer = "AGAGCAACCCTGTCATAAAGAGAAC")
+ZFY <-data.frame(Locus = "ZFY", Ploidy = 1, SNPpos = 32, Allele1 = "A", Allele2 = "A", Probe1 = "TGTACCCACAGAGGTGT", Probe2 = "TGTACCCACAGAGGTGT", Primer = "GCAAGCTCCGAGATTAAACCA")
+
+```
+
+
+After correcting we made a new one but it is a .csv format, so pull that in and write as new tab-delim .txt
+```{r}
+ProbeCSV <- read.csv(here("GTseq_September2024", "GTscoreInput_211SNPsSept2024.csv"), header = T)
+
+write.table(ProbeCSV, "GTscoreInput_211SNPsSept2024_Corr.txt", sep = "\t",row.names = F,quote = FALSE)
+```
+
+11/04/2024
+we need to modify now that we've run it with a final pool
+```{r}
+library(here)
+library(tidyverse)
+GTscore1 <- read.csv(here("GTseq_September2024","GTscoreInput_211SNPsSept2024.csv"), header =T)
+finalPool <- read.csv(here("Final_pool_list.csv"), header = T)
+GTscore_check <- read.csv(here("GTseq_September2024","GTscoreInput_211SNPsSept2024.csv"), header =T)
+
+finalPool %>% rename("Locus" = "SNPid") %>% select(Locus) -> final_list
+
+left_join(final_list,GTscore1) -> GTscore2
+
+write.table(GTscore2, "GTscoreInput_155SNPsNov2024.txt", sep = "\t",row.names = F,quote = FALSE)
+
+
+```
+
