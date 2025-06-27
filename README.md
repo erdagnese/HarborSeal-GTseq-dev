@@ -10,3 +10,4 @@ This repository includes:
 
   3. scripts to analyze the output of the GTscore pipeline for analyzing harbor seal genotypes with the GTseq assay
 
+*this repo does not have scripts updated to work in the updated directory structure*
