@@ -3,9 +3,9 @@ This repository houses the scripts used to run the GTscore pipeline created by G
 
 This repository includes:
 
-1.local scripts to setup the inputs for the GTscore pipeline
+> 1.local scripts to setup the inputs for the GTscore pipeline
 
-2. The input files created and used in the pipeline
+> 2. The input files created and used in the pipeline
 
-3. scripts to analyze the output of the GTscore pipeline for analyzing harbor seal genotypes with the GTseq assay
+> 3. scripts to analyze the output of the GTscore pipeline for analyzing harbor seal genotypes with the GTseq assay
 
