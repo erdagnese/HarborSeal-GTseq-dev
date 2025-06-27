@@ -1,5 +1,6 @@
 # HarborSeal-ID
 This repository houses the scripts used to run the GTscore pipeline created by Garrett McKinney.
+(found at https://github.com/gjmckinney/GTscore)
 
 This repository includes:
 
