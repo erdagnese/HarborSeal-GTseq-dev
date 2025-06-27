@@ -2,4 +2,6 @@
 .Rhistory
 .RData
 .Ruserdata
+
+#scripts from other repos
 /scripts/GTscore-master/
