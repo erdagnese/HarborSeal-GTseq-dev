@@ -1,0 +1,52 @@
+---
+title: "Sample_accounting"
+author: "Erin D'Agnese"
+date: "2023-10-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+We need to sort out the samples of extract we have and where they came from
+```{r}
+library(here)
+```
+```{r}
+Extracts <- read.csv(here("AllHarborSealExtract_ListFormat.csv"))
+scat16 <- read.csv(here("2016_scat_log.csv"))
+scat17 <- read.csv(here("2017_scat_log.csv"))
+scat18 <- read.csv(here("2018_scat_log.csv"))
+```
+
+```{r}
+library(tidyverse)
+```
+
+```{r}
+scat16 %>%
+  select(Collection_Date, Collection_Location, Sample_ID) -> scat16
+
+scat17 %>%
+  select(Collection_Date, Collection_Location, Sample_ID) -> scat17
+
+scat18 %>%
+  select(Collection_Date, Collection_Location, Sample_ID) -> scat18
+
+scat <- rbind(scat16,scat17,scat18)
+
+scat %>% 
+  dplyr::rename(ScatID = Sample_ID) -> scat
+
+left_join(Extracts, scat, by = "ScatID") -> Extract_scat
+
+
+```
+
+Let's see the Commencement Bay samples
+```{r}
+Extract_scat %>%
+  filter(Collection_Location == "Commencement Bay") -> ComBay
+```
+
